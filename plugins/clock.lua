@@ -1,5 +1,6 @@
 local M = {}
-local Popup = require("core.popup")
+local Panel = require("core.panel")
+local Util = require("core.util")
 
 local str, last_sec, P = "--:--", -1, nil
 local today = os.date("*t")
@@ -15,71 +16,84 @@ local function first_wday(y, m)
 	return tonumber(os.date("%w", os.time({ year = y, month = m, day = 1, hour = 12 })))
 end
 
-local function draw_popup(pop)
-	local ctx = pop.ctx
-	local s = pop.surf
-	local T = ctx.theme
-	local W_ = pop.w
+local function build_model(ctx, user_size)
 	local lh = ctx.get_line_height()
+	local m = {}
+	m.LH = lh
+	m.PAD = 20
+	m.COL_W = lh + 26
+	m.W = m.PAD * 2 + m.COL_W * 7
+	m.HEAD_H = lh + 26
+	m.ROW_H = lh + 10
+	m.H = m.HEAD_H + (lh + 6) + (lh + 4) + 12 + 1 + 10 + (lh + 8) + (lh + 8)
+		+ m.ROW_H * 6 + 16
+	if user_size then
+		m.W = math.max(m.W, user_size.w)
+		m.H = math.max(m.H, user_size.h)
+	end
+	return m
+end
+
+local function draw_panel(p)
+	local ctx = p.ctx
+	local T = ctx.theme
+	local m = p.m
+	local W_, lh, PAD, COL_W = m.W, m.LH, m.PAD, m.COL_W
 
 	local time_str = os.date("%H:%M:%S")
-	local date_str = os.date("%A, %B %d")
+	local date_str = os.date("%a, %b %d")
+	p:draw_header("Clock", Util.keybind_hint(ctx, "toggle_clock"), PAD)
+	local ty = m.HEAD_H + 6
 	local tw = select(1, ctx.get_text_size(time_str))
-	ctx.L.xft_draw_rgba(ctx.ft_ctx, s, W_, pop.h, math.floor((W_ - tw) / 2), 26, time_str, T.fg)
+	p:text(math.floor((W_ - tw) / 2), ty, time_str, T.primary)
 	local dw = select(1, ctx.get_text_size(date_str))
-	ctx.L.xft_draw_rgba(ctx.ft_ctx, s, W_, pop.h, math.floor((W_ - dw) / 2), 26 + lh + 6, date_str, T.dim)
+	p:text(math.floor((W_ - dw) / 2), ty + lh + 4, date_str, T.on_var)
 
-	local y = 26 + (lh + 6) * 2 + 8
-	ctx.L.surf_fill(s, W_, pop.h, 18, y, W_ - 36, 1, 0x3a3a3c)
-	y = y + 12
+	local y = ty + lh + 4 + lh + 12
+	p:rect(PAD, y, W_ - PAD * 2, 1, T.outline)
+	y = y + 10
 
-	local month_str = string.format("%d 年 %d 月", view_year, view_month)
+	local month_str = string.format("%d-%02d", view_year, view_month)
 	local mw = select(1, ctx.get_text_size(month_str))
-	ctx.L.xft_draw_rgba(ctx.ft_ctx, s, W_, pop.h, math.floor((W_ - mw) / 2), y, month_str, T.fg)
-	y = y + lh + 12
+	p:text(math.floor((W_ - mw) / 2), y, month_str, T.on_surface)
+	y = y + lh + 8
 
-	local cols = { "日", "一", "二", "三", "四", "五", "六" }
-	local inner = W_ - 36
-	local col_w = math.floor(inner / 7)
-	local first_x = 18
+	local cols = { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" }
+	local inner = W_ - PAD * 2
+	local first_x = PAD
 	for i, c in ipairs(cols) do
-		local cx = first_x + (i - 1) * col_w
+		local cx = first_x + (i - 1) * COL_W
 		local cw = select(1, ctx.get_text_size(c))
-		ctx.L.xft_draw_rgba(ctx.ft_ctx, s, W_, pop.h, cx + math.floor((col_w - cw) / 2), y, c, T.dim)
+		p:text(cx + math.floor((COL_W - cw) / 2), y, c, T.hint)
 	end
 	y = y + lh + 8
 
 	local dim = days_in_month(view_year, view_month)
 	local fwd = first_wday(view_year, view_month)
-	local row_h = lh + 10
+	local row_h = m.ROW_H
 
 	for row = 0, 5 do
 		for col = 0, 6 do
 			local day = row * 7 + col - fwd + 1
 			if day >= 1 and day <= dim then
-				local cx = first_x + col * col_w
+				local cx = first_x + col * COL_W
 				local cy = y + row * row_h
 				local day_str = tostring(day)
 				local dw_ = select(1, ctx.get_text_size(day_str))
-				local tx = cx + math.floor((col_w - dw_) / 2)
-				local is_today = day == today.day and view_month == today.month and view_year == today.year
+				local tx = cx + math.floor((COL_W - dw_) / 2)
+				local is_today = day == today.day and view_month == today.month
+					and view_year == today.year
 				if is_today then
 					local pad = 5
 					local sz = lh + pad * 2
-					ctx.L.surf_rrect_aa(
-						s,
-						W_,
-						pop.h,
-						cx + math.floor((col_w - sz) / 2),
+					p:rrect(
+						cx + math.floor((COL_W - sz) / 2),
 						cy - pad + 2,
-						sz,
-						sz,
-						math.floor(sz / 2),
-						T.accent
+						sz, sz, math.floor(sz / 2), T.primary
 					)
-					ctx.L.xft_draw_rgba(ctx.ft_ctx, s, W_, pop.h, tx, cy, day_str, 0xffffff)
+					p:text(tx, cy, day_str, T.on_primary)
 				else
-					ctx.L.xft_draw_rgba(ctx.ft_ctx, s, W_, pop.h, tx, cy, day_str, T.fg)
+					p:text(tx, cy, day_str, (col == 0 or col == 6) and T.on_var or T.on_surface)
 				end
 			end
 		end
@@ -87,14 +101,25 @@ local function draw_popup(pop)
 end
 
 function M.init(ctx)
-	P = Popup.new(ctx, {
-		w = 320,
-		h = 340,
-		radius = 14,
-		bg = ctx.theme.surface,
-		draw = draw_popup,
+	P = Panel.new(ctx, {
+		name = "clock",
+		radius = 16,
+		bg = ctx.theme.bg,
+		size_fn = function(c)
+			local m = build_model(c)
+			return m.W, m.H
+		end,
+		draw = draw_panel,
+		on_press = function(p, mx, my, btn)
+			if btn == 1 and p:header_hit(mx, my) then
+				p:hide()
+			end
+		end,
 	})
-	ctx.register_popup("clock", P)
+	if P then
+		P.m = build_model(ctx)
+	end
+	ctx.register_panel("clock", P)
 end
 
 function M.width(ctx)
@@ -126,7 +151,7 @@ function M.on_click(ctx, btn, lx, ly, gx, gw)
 	view_year, view_month = t.year, t.month
 	local direction = (ctx.config.position == "top") and "below" or "above"
 	local anchor_y = (ctx.config.position == "top") and ctx.bar.h or (ctx.scr_h - ctx.bar.h)
-	ctx.show_popup("clock", gx + gw / 2, anchor_y, direction)
+	ctx.show_panel("clock", gx + gw / 2, anchor_y, direction)
 end
 
 function M.shutdown() end

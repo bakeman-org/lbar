@@ -1,4 +1,32 @@
 TODO
-1. clock plugin popup why the ui on x11 is kind of mess see screenshot
-2. the popup window still only works on x11 I click clock, not work on wayland backend
-3. if any code change do full code on change, no hide as ...
+1. DONE popup UI garbage fixed (xpet-proven XImage flush path: img data calloc + bytes_per_line row copy)
+2. DONE panel (popup) reworked to xpet panel system, wayland path fixed (margin commit on move/show, flush guard, re-show after hide)
+3. DONE full code on every change
+4. DONE global shortcut keybinds ported from xpet (config.keybinds, X11 grabs, ctrl+alt+c/y/h/r/q)
+5. DONE full xpet plugin migration: launcher, clip_hist, pomodoro, music_player, weather, sysinfo, sysmon, color_picker, move_window, resize_window, ui_demo, keybinds_help, hide_all
+6. DONE xpet keybinds in config.lua with group/desc (keybinds_help) + plugin opts
+7. DONE panels auto-adaptive to font size (size_fn + lh-derived models)
+8. DONE generic ui widget framework (buttons, sliders, toggles, progress, hover/click id-based)
+9. DONE MD3 design for panels/popups and bar (core/theme.md3 + legacy color map)
+10. DONE xpet-style toast on popup slots (styles: plain/success/error)
+11. DONE panel live_resize/move_to/move_by, ptr grab + screen sampling for color pick (X11)
+12. DONE LBAR_POPUP_MAX 16, Escape closes sticky panels, scroll routing
+13. DONE music_player: bogus duration on probe-failure tracks (clamped d < 3600)
+14. TODO wayland: verify all panels/keybinds under sway/hyprland
+15. DONE bar items for all panel plugins (apps/clip/pomo/music/wttr/info/mon/pick/ui/keys), anchored toggle via Util.toggle_from_bar
+16. DONE panel auto-fit: refit on every show + model_fn rebuilds layout from current line height
+17. DONE bar gap compression when items exceed width at large fonts; pomodoro/keybinds panel size caps scale with line height
+18. DONE reload_all destroys old panels + clears ctx._panels (stale popup ids); toast uses live_resize
+19. DONE builtin themes: md3/one/gruvbox/nord/catppuccin/tokyo_night/solarized x dark+light (config theme = name)
+20. DONE dark/light mode toggle: ctrl+alt+k or menu panel Theme button, live re-render of bar+panels
+21. DONE panel position persistence: move (ctrl+alt+arrows) remembered across hide (ctrl+alt+d) and re-show
+22. DONE hint text contrast: dim T.outline text -> readable T.hint (on_var) across all panels
+23. DONE menu plugin: tux logo leftmost in bar, app info panel (backend/screen/engine/font/plugins/uptime) + theme/reload/quit buttons
+24. DONE ui_demo full widget showcase (buttons, chips, slider+progress, toggles, text field w/ typing, list w/ hover+select) + theme tag
+25. DONE color_picker panel widened 320->420, swatch 64->96
+26. DONE standard panel header framework: Panel:draw_header(title,hint,pad) / header_close / header_hit (surface strip, title left, hint right, uniform 28x28 rounded-8 close, divider); applied to all 13 panels (weather, sysinfo, color_picker, pomodoro, clip_hist, keybinds_help, music_player, system, launcher, sysmon, menu, ui_demo, clock)
+27. DONE no auto keyboard grab / input focus on panel show (blocked i3 super+shift+p); keyboard grabbed only while text input focused (click to focus, click away to blur) — launcher, sysmon, music_player, ui_demo
+28. DONE click outside a panel hides it (pointer grab held while panel visible; toast + color_mag excluded)
+29. DONE music_player: header close hint key ctrl+alt+m; volume + last track persisted to ~/.local/state/lbar/music.conf (hot-reload keeps ctx._music_state)
+30. DONE panels resize reactively via ctrl+alt+shift+arrows (user_size + model_fn(ctx, user_size) rebuild in live_resize; flow panels recompute visible rows; fixed panels clamp to natural min); reset via ctrl+alt+shift+0
+31. DONE color_picker pick flow fixed: events now route to ctx.active_panel (magnifier was never in panels table); mag grabs keyboard during pick, Escape cancels

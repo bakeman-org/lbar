@@ -1,6 +1,6 @@
 local M = {}
-local Popup = require("core.popup")
-local W = require("core.widgets")
+local Panel = require("core.panel")
+local Util = require("core.util")
 
 local P, last = nil, 0
 local prev_cpu
@@ -86,82 +86,103 @@ local function pick(ctx, p)
 	if p >= 50 then
 		return ctx.theme.warn
 	end
-	return ctx.theme.accent
+	return ctx.theme.primary
 end
 
-local function draw_popup(pop)
-	local ctx = pop.ctx
-	local T, s = ctx.theme, pop.surf
-	local L = ctx.L
-	local W_ = pop.w
+local function build_model(ctx, user_size)
 	local lh = ctx.get_line_height()
-	local PAD = 18
-	local inner = W_ - PAD * 2
-	local tx = function(str, x, y, color)
-		L.xft_draw_rgba(ctx.ft_ctx, s, W_, pop.h, x, y, str, color)
+	local m = {}
+	m.LH = lh
+	m.PAD = 20
+	m.W = 340
+	m.HEAD_H = lh + 26
+	m.ROW_H = lh + 20
+	m.H = m.HEAD_H + m.ROW_H * 3 + 24 + (lh + 12) + 20 + lh + 18
+	if user_size then
+		m.W = math.max(m.W, user_size.w)
+		m.H = math.max(m.H, user_size.h)
 	end
+	return m
+end
 
-	tx("System", PAD, 16, T.fg)
-	local up_str = "up " .. uptime_str
-	local up_w = select(1, ctx.get_text_size(up_str))
-	tx(up_str, W_ - PAD - up_w, 16, T.dim)
+local function draw_panel(p)
+	local ctx = p.ctx
+	local T = ctx.theme
+	local m = p.m
+	local W_ = m.W
+	local lh, PAD = m.LH, m.PAD
+	local inner = W_ - PAD * 2
 
-	local y = 16 + lh + 14
+	p:draw_header("System", Util.keybind_hint(ctx, "toggle_system"), PAD)
 
-	tx("CPU", PAD, y, T.dim)
+	local y = m.HEAD_H + 14
+
+	p:text(PAD, y, "CPU", T.on_var)
 	local cpu_s = string.format("%d%%", cpu_pct)
 	local cpu_w = select(1, ctx.get_text_size(cpu_s))
-	tx(cpu_s, W_ - PAD - cpu_w, y, T.fg)
-	y = y + lh + 4
-	W.progress(ctx, {
-		rrect = function(_, x, y, w, h, r, c)
-			L.surf_rrect_aa(s, W_, pop.h, x, y, w, h, r, c)
-		end,
-	}, PAD, y, inner, 8, cpu_pct, pick(ctx, cpu_pct))
-	y = y + 8 + 16
+	p:text(W_ - PAD - cpu_w, y, cpu_s, T.on_surface)
+	y = y + lh + 6
+	p.ui:progress(PAD, y, inner, 8, cpu_pct, pick(ctx, cpu_pct), T.surface_hi)
+	y = y + m.ROW_H - lh
 
-	tx("Memory", PAD, y, T.dim)
+	p:text(PAD, y, "Memory", T.on_var)
 	local mem_s = string.format("%.1f / %.1f GB", mem_used_gb, mem_total_gb)
 	local mem_w = select(1, ctx.get_text_size(mem_s))
-	tx(mem_s, W_ - PAD - mem_w, y, T.fg)
-	y = y + lh + 4
-	L.surf_rrect_aa(s, W_, pop.h, PAD, y, inner, 8, 4, 0x2b2b2e)
+	p:text(W_ - PAD - mem_w, y, mem_s, T.on_surface)
+	y = y + lh + 6
+	p:rrect(PAD, y, inner, 8, 4, T.surface_hi)
 	if mem_pct > 0 then
 		local fw = math.max(8, math.floor(inner * mem_pct / 100))
-		L.surf_rrect_aa(s, W_, pop.h, PAD, y, fw, 8, 4, pick(ctx, mem_pct))
+		p:rrect(PAD, y, fw, 8, 4, pick(ctx, mem_pct))
 	end
-	y = y + 8 + 16
+	y = y + m.ROW_H - lh
 
-	tx("Swap", PAD, y, T.dim)
+	p:text(PAD, y, "Swap", T.on_var)
 	local sw_s = string.format("%d%%", swap_pct)
 	local sw_w = select(1, ctx.get_text_size(sw_s))
-	tx(sw_s, W_ - PAD - sw_w, y, T.fg)
-	y = y + lh + 4
-	L.surf_rrect_aa(s, W_, pop.h, PAD, y, inner, 8, 4, 0x2b2b2e)
+	p:text(W_ - PAD - sw_w, y, sw_s, T.on_surface)
+	y = y + lh + 6
+	p:rrect(PAD, y, inner, 8, 4, T.surface_hi)
 	if swap_pct > 0 then
 		local fw = math.max(8, math.floor(inner * swap_pct / 100))
-		L.surf_rrect_aa(s, W_, pop.h, PAD, y, fw, 8, 4, T.accent)
+		p:rrect(PAD, y, fw, 8, 4, T.primary)
 	end
-	y = y + 8 + 18
+	y = y + 24
 
-	L.surf_fill(s, W_, pop.h, PAD, y, inner, 1, 0x3a3a3c)
+	p:rect(PAD, y, inner, 1, T.outline)
 	y = y + 12
-	tx("Load avg", PAD, y, T.dim)
+	p:text(PAD, y, "Load avg", T.on_var)
 	local load_s = string.format("%.2f  %.2f  %.2f", load1, load5, load15)
 	local load_w = select(1, ctx.get_text_size(load_s))
-	tx(load_s, W_ - PAD - load_w, y, T.fg)
+	p:text(W_ - PAD - load_w, y, load_s, T.on_surface)
+	y = y + lh + 6
+	p:text(PAD, y, "uptime", T.on_var)
+	local up_str = "up " .. uptime_str
+	local up_w = select(1, ctx.get_text_size(up_str))
+	p:text(W_ - PAD - up_w, y, up_str, T.on_surface)
 end
 
 function M.init(ctx)
 	update_stats()
-	P = Popup.new(ctx, {
-		w = 300,
-		h = 260,
-		radius = 14,
-		bg = ctx.theme.surface,
-		draw = draw_popup,
+	P = Panel.new(ctx, {
+		name = "system",
+		radius = 16,
+		bg = ctx.theme.bg,
+		size_fn = function(c)
+			local m = build_model(c)
+			return m.W, m.H
+		end,
+		draw = draw_panel,
+		on_press = function(p, mx, my, btn)
+			if btn == 1 and p:header_hit(mx, my) then
+				p:hide()
+			end
+		end,
 	})
-	ctx.register_popup("system", P)
+	if P then
+		P.m = build_model(ctx)
+	end
+	ctx.register_panel("system", P)
 end
 
 function M.width(ctx)
@@ -192,7 +213,7 @@ function M.on_click(ctx, btn, lx, ly, gx, gw)
 	update_stats()
 	local direction = (ctx.config.position == "top") and "below" or "above"
 	local anchor_y = (ctx.config.position == "top") and ctx.bar.h or (ctx.scr_h - ctx.bar.h)
-	ctx.show_popup("system", gx + gw / 2, anchor_y, direction)
+	ctx.show_panel("system", gx + gw / 2, anchor_y, direction)
 end
 
 function M.shutdown() end

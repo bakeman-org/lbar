@@ -1,7 +1,4 @@
 // src/backends.c
-//
-// Windowing backend for lbar: Wayland (zwlr-layer-shell + wl_shm) or
-// X11 (EWMH dock + override-redirect popups), behind one opaque handle.
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <poll.h>
@@ -15,18 +12,13 @@
 #include <time.h>
 #include <unistd.h>
 
-/* ---------- X11 ---------- */
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/shape.h>
 
-/* ---------- Wayland ---------- */
 #include <wayland-client.h>
 
-/* ===================================================================
-   Logging
-   =================================================================== */
 static void lbar_log(const char *level, const char *fmt, ...) {
   va_list ap;
   fprintf(stderr, "[%s] lbar: ", level);
@@ -39,9 +31,6 @@ static void lbar_log(const char *level, const char *fmt, ...) {
 #define LOG_WARN(...) lbar_log("WARN", __VA_ARGS__)
 #define LOG_ERROR(...) lbar_log("ERROR", __VA_ARGS__)
 
-/* ===================================================================
-   zwlr-layer-shell-unstable-v1 — hand-written protocol descriptors
-   =================================================================== */
 struct zwlr_layer_shell_v1;
 struct zwlr_layer_surface_v1;
 
@@ -165,18 +154,37 @@ static void zwlr_ls_destroy(struct zwlr_layer_surface_v1 *ls) {
                          WL_MARSHAL_FLAG_DESTROY);
 }
 
-/* ===================================================================
-   Context
-   =================================================================== */
 #define LBAR_EV_MAX 64
+#define LBAR_POPUP_MAX 16
 
 typedef struct {
-  int type; /* 1=motion 2=press 3=release 4=expose / popup-hidden */
+  int type; /* 1=motion 2=press 3=release 4=expose/popup-hidden 5=key */
   int x, y;
   int root_x, root_y;
   int button;
-  int target; /* 0=bar 1=popup */
+  int target; /* 0=bar 1=popup 2=key */
+  int keycode;
+  int keystate;
 } lbar_ev_t;
+
+typedef struct {
+  /* shared */
+  int w, h, r;
+  int visible;
+  /* X11 */
+  Window x_win;
+  GC x_gc;
+  /* Wayland */
+  struct wl_surface *surf;
+  struct zwlr_layer_surface_v1 *layer;
+  struct wl_shm_pool *pool;
+  struct wl_buffer *buf;
+  uint32_t *pix;
+  int map_w, map_h;
+  int x, y;
+  int configured;
+  int busy;
+} lbar_popup_t;
 
 typedef struct lbar_ctx {
   int is_wayland;
@@ -185,7 +193,6 @@ typedef struct lbar_ctx {
   lbar_ev_t events[LBAR_EV_MAX];
   int ev_head, ev_tail;
 
-  /* X11 */
   Display *x_dpy;
   int x_screen;
   Window x_root;
@@ -194,13 +201,9 @@ typedef struct lbar_ctx {
   GC x_bar_gc;
   int x_bar_w, x_bar_h;
 
-  Window x_popup_win;
-  GC x_popup_gc;
-  Pixmap x_popup_mask;
-  int x_popup_w, x_popup_h, x_popup_r;
-  int x_popup_visible;
+  lbar_popup_t popups[LBAR_POPUP_MAX];
+  int n_popups;
 
-  /* Wayland */
   struct wl_display *wl_dpy;
   struct wl_registry *wl_reg;
   struct wl_compositor *wl_comp;
@@ -221,28 +224,13 @@ typedef struct lbar_ctx {
   int bar_configured;
   int bar_busy;
 
-  struct wl_surface *pop_surf;
-  struct zwlr_layer_surface_v1 *pop_layer;
-  struct wl_shm_pool *pop_pool;
-  struct wl_buffer *pop_buf;
-  uint32_t *pop_pix;
-  int pop_w, pop_h;
-  int pop_map_w, pop_map_h;
-  int pop_x, pop_y;
-  int pop_visible;
-  int pop_configured;
-  int pop_busy;
-
   int have_comp, have_shm, have_seat, have_out, have_shell;
 
-  int ptr_target;   /* 0=elsewhere 1=bar 2=popup */
-  int ptr_x, ptr_y; /* last known pointer pos */
+  int ptr_target;
+  int ptr_x, ptr_y;
   uint32_t ptr_leave_ms;
 } lbar_ctx;
 
-/* ===================================================================
-   Helpers
-   =================================================================== */
 static uint32_t now_ms(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -250,7 +238,7 @@ static uint32_t now_ms(void) {
 }
 
 static void ev_push(lbar_ctx *c, int type, int x, int y, int rx, int ry,
-                    int btn, int target) {
+                    int btn, int target, int key, int ks) {
   int next = (c->ev_tail + 1) % LBAR_EV_MAX;
   if (next == c->ev_head)
     return;
@@ -262,6 +250,8 @@ static void ev_push(lbar_ctx *c, int type, int x, int y, int rx, int ry,
   e->root_y = ry;
   e->button = btn;
   e->target = target;
+  e->keycode = key;
+  e->keystate = ks;
   c->ev_tail = next;
 }
 
@@ -269,7 +259,7 @@ static int shm_fd_create(size_t size) {
   int fd = memfd_create("lbar-shm", MFD_CLOEXEC);
   if (fd < 0) {
     char name[64];
-    snprintf(name, sizeof(name), "/lbar-%d-%u", (int)getpid(), now_ms());
+    snprintf(name, sizeof(name), "/tmp/lbar-shm-%d", getpid());
     fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
     if (fd >= 0)
       shm_unlink(name);
@@ -283,9 +273,6 @@ static int shm_fd_create(size_t size) {
   return fd;
 }
 
-/* ===================================================================
-   Wayland listeners
-   =================================================================== */
 static void wl_registry_global(void *data, struct wl_registry *reg,
                                uint32_t name, const char *iface, uint32_t ver) {
   lbar_ctx *c = data;
@@ -326,7 +313,6 @@ static void wl_registry_remove(void *d, struct wl_registry *r, uint32_t n) {
 static const struct wl_registry_listener registry_listener = {
     wl_registry_global, wl_registry_remove};
 
-/* --- Pointer --- */
 static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
                       struct wl_surface *surf, wl_fixed_t sx, wl_fixed_t sy) {
   lbar_ctx *c = data;
@@ -334,13 +320,18 @@ static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
   (void)serial;
   if (surf == c->bar_surf)
     c->ptr_target = 1;
-  else if (surf == c->pop_surf)
-    c->ptr_target = 2;
-  else
+  else {
     c->ptr_target = 0;
+    for (int i = 0; i < c->n_popups; i++) {
+      if (surf == c->popups[i].surf) {
+        c->ptr_target = 2;
+        break;
+      }
+    }
+  }
   c->ptr_x = wl_fixed_to_int(sx);
   c->ptr_y = wl_fixed_to_int(sy);
-  ev_push(c, 1, c->ptr_x, c->ptr_y, 0, 0, 0, c->ptr_target == 2 ? 1 : 0);
+  ev_push(c, 1, c->ptr_x, c->ptr_y, 0, 0, 0, c->ptr_target == 2 ? 1 : 0, 0, 0);
 }
 static void ptr_leave(void *data, struct wl_pointer *p, uint32_t serial,
                       struct wl_surface *surf) {
@@ -360,7 +351,7 @@ static void ptr_motion(void *data, struct wl_pointer *p, uint32_t t,
     return;
   c->ptr_x = wl_fixed_to_int(sx);
   c->ptr_y = wl_fixed_to_int(sy);
-  ev_push(c, 1, c->ptr_x, c->ptr_y, 0, 0, 0, c->ptr_target == 2 ? 1 : 0);
+  ev_push(c, 1, c->ptr_x, c->ptr_y, 0, 0, 0, c->ptr_target == 2 ? 1 : 0, 0, 0);
 }
 static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
                        uint32_t t, uint32_t btn, uint32_t state) {
@@ -371,10 +362,8 @@ static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
   if (c->ptr_target == 0)
     return;
   int type = (state == WL_POINTER_BUTTON_STATE_PRESSED) ? 2 : 3;
-  /* Use the last known pointer position — Wayland button events carry no
-     coordinates, unlike X11. Without this, the Lua layer receives (0,0). */
   ev_push(c, type, c->ptr_x, c->ptr_y, 0, 0, (int)btn,
-          c->ptr_target == 2 ? 1 : 0);
+          c->ptr_target == 2 ? 1 : 0, 0, 0);
 }
 static void ptr_axis(void *data, struct wl_pointer *p, uint32_t t,
                      uint32_t axis, wl_fixed_t value) {
@@ -386,7 +375,8 @@ static void ptr_axis(void *data, struct wl_pointer *p, uint32_t t,
   if (c->ptr_target == 0)
     return;
   int btn = (value < 0) ? 4 : 5;
-  ev_push(c, 2, c->ptr_x, c->ptr_y, 0, 0, btn, c->ptr_target == 2 ? 1 : 0);
+  ev_push(c, 2, c->ptr_x, c->ptr_y, 0, 0, btn, c->ptr_target == 2 ? 1 : 0, 0,
+          0);
 }
 static void ptr_frame(void *d, struct wl_pointer *p) {
   (void)d;
@@ -440,7 +430,6 @@ static const struct wl_pointer_listener pointer_listener = {
     .axis_relative_direction = ptr_axis_rel_dir,
 };
 
-/* --- Layer surface --- */
 static void bar_configure(void *data, struct zwlr_layer_surface_v1 *ls,
                           uint32_t serial, uint32_t w, uint32_t h);
 static void pop_configure(void *data, struct zwlr_layer_surface_v1 *ls,
@@ -468,15 +457,13 @@ static const struct wl_buffer_listener bar_buf_listener = {
 static void pop_buf_release(void *data, struct wl_buffer *b) {
   lbar_ctx *c = data;
   (void)b;
-  c->pop_busy = 0;
+  for (int i = 0; i < c->n_popups; i++)
+    c->popups[i].busy = 0;
 }
 static const struct wl_buffer_listener pop_buf_listener = {
     .release = pop_buf_release,
 };
 
-/* ===================================================================
-   Wayland create / destroy helpers
-   =================================================================== */
 static int wl_make_buffer(struct wl_shm *shm, int w, int h,
                           struct wl_shm_pool **pool_out,
                           struct wl_buffer **buf_out, uint32_t **pixels_out) {
@@ -535,29 +522,28 @@ static int recreate_bar_buffer(lbar_ctx *c) {
   return 0;
 }
 
-static int recreate_pop_buffer(lbar_ctx *c) {
-  if (c->pop_buf) {
-    wl_buffer_destroy(c->pop_buf);
-    c->pop_buf = NULL;
+static int recreate_pop_buffer(lbar_ctx *c, lbar_popup_t *p) {
+  if (p->buf) {
+    wl_buffer_destroy(p->buf);
+    p->buf = NULL;
   }
-  if (c->pop_pool) {
-    wl_shm_pool_destroy(c->pop_pool);
-    c->pop_pool = NULL;
+  if (p->pool) {
+    wl_shm_pool_destroy(p->pool);
+    p->pool = NULL;
   }
-  if (c->pop_pix) {
-    munmap(c->pop_pix, (size_t)c->pop_map_w * c->pop_map_h * 4);
-    c->pop_pix = NULL;
+  if (p->pix) {
+    munmap(p->pix, (size_t)p->map_w * p->map_h * 4);
+    p->pix = NULL;
   }
-  c->pop_map_w = c->pop_w;
-  c->pop_map_h = c->pop_h;
-  if (wl_make_buffer(c->wl_shm, c->pop_w, c->pop_h, &c->pop_pool, &c->pop_buf,
-                     &c->pop_pix) < 0) {
-    LOG_ERROR("recreate_pop_buffer failed (%dx%d)", c->pop_w, c->pop_h);
+  p->map_w = p->w;
+  p->map_h = p->h;
+  if (wl_make_buffer(c->wl_shm, p->w, p->h, &p->pool, &p->buf, &p->pix) < 0) {
+    LOG_ERROR("recreate_pop_buffer failed (%dx%d)", p->w, p->h);
     return -1;
   }
-  wl_buffer_add_listener(c->pop_buf, &pop_buf_listener, c);
-  c->pop_busy = 0;
-  LOG_INFO("popup buffer %dx%d", c->pop_w, c->pop_h);
+  wl_buffer_add_listener(p->buf, &pop_buf_listener, c);
+  p->busy = 0;
+  LOG_INFO("popup buffer %dx%d", p->w, p->h);
   return 0;
 }
 
@@ -582,18 +568,27 @@ static void pop_configure(void *data, struct zwlr_layer_surface_v1 *ls,
                           uint32_t serial, uint32_t w, uint32_t h) {
   lbar_ctx *c = data;
   zwlr_ls_ack_configure(ls, serial);
+  lbar_popup_t *p = NULL;
+  for (int i = 0; i < c->n_popups; i++) {
+    if (c->popups[i].layer == ls) {
+      p = &c->popups[i];
+      break;
+    }
+  }
+  if (!p)
+    return;
   int nw = (int)w, nh = (int)h;
   if (nw <= 0)
-    nw = c->pop_w;
+    nw = p->w;
   if (nh <= 0)
-    nh = c->pop_h;
-  if (nw != c->pop_w || nh != c->pop_h) {
+    nh = p->h;
+  if (nw != p->w || nh != p->h) {
     LOG_INFO("popup configure -> %dx%d", nw, nh);
-    c->pop_w = nw;
-    c->pop_h = nh;
-    recreate_pop_buffer(c);
+    p->w = nw;
+    p->h = nh;
+    recreate_pop_buffer(c, p);
   }
-  c->pop_configured = 1;
+  p->configured = 1;
 }
 static void pop_closed(void *data, struct zwlr_layer_surface_v1 *ls) {
   (void)data;
@@ -627,9 +622,14 @@ static int wl_open(lbar_ctx *c) {
   return 0;
 }
 
-static int wl_create_bar(lbar_ctx *c, int h, int pos) {
+static int wl_create_bar(lbar_ctx *c, int h, int pos, int margin) {
+  if (margin < 0)
+    margin = 0;
+  int bw = c->screen_w - 2 * margin;
+  if (bw < 32)
+    bw = 32;
   c->bar_pos = pos;
-  c->bar_w = c->screen_w;
+  c->bar_w = bw;
   c->bar_h = h;
 
   c->bar_surf = wl_compositor_create_surface(c->wl_comp);
@@ -645,7 +645,9 @@ static int wl_create_bar(lbar_ctx *c, int h, int pos) {
                                 ZWLR_LAYER_SHELL_V1_LAYER_TOP, "lbar");
   zwlr_ls_set_size(c->bar_layer, c->bar_w, c->bar_h);
   zwlr_ls_set_anchor(c->bar_layer, anchor);
-  zwlr_ls_set_exclusive_zone(c->bar_layer, c->bar_h);
+  zwlr_ls_set_margin(c->bar_layer, pos == 0 ? margin : 0, margin,
+                     pos == 0 ? 0 : margin, margin);
+  zwlr_ls_set_exclusive_zone(c->bar_layer, c->bar_h + margin);
   zwlr_ls_set_kb(c->bar_layer,
                  ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
   zwlr_layer_surface_v1_add_listener(c->bar_layer, &bar_layer_listener, c);
@@ -664,67 +666,70 @@ static int wl_create_bar(lbar_ctx *c, int h, int pos) {
   return 0;
 }
 
-static int wl_create_popup(lbar_ctx *c, int w, int h, int r) {
+static int wl_popup_init(lbar_ctx *c, lbar_popup_t *p, int w, int h, int r) {
   (void)r;
-  c->pop_w = w;
-  c->pop_h = h;
+  p->w = w;
+  p->h = h;
+  p->r = r;
+  p->x = 0;
+  p->y = 0;
 
-  c->pop_surf = wl_compositor_create_surface(c->wl_comp);
-  c->pop_layer = zwlr_ls_get_layer_surface(c->wl_shell, c->pop_surf, c->wl_out,
-                                           ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
-                                           "lbar-popup");
-  zwlr_ls_set_size(c->pop_layer, w, h);
-  zwlr_ls_set_anchor(c->pop_layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
-  zwlr_ls_set_exclusive_zone(c->pop_layer, 0);
-  zwlr_ls_set_kb(c->pop_layer,
+  p->surf = wl_compositor_create_surface(c->wl_comp);
+  p->layer = zwlr_ls_get_layer_surface(c->wl_shell, p->surf, c->wl_out,
+                                       ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
+                                       "lbar-popup");
+  zwlr_ls_set_size(p->layer, w, h);
+  zwlr_ls_set_anchor(p->layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+                                   ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
+  zwlr_ls_set_exclusive_zone(p->layer, 0);
+  zwlr_ls_set_kb(p->layer,
                  ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
-  zwlr_layer_surface_v1_add_listener(c->pop_layer, &pop_layer_listener, c);
+  zwlr_layer_surface_v1_add_listener(p->layer, &pop_layer_listener, c);
 
-  c->pop_map_w = w;
-  c->pop_map_h = h;
-  if (wl_make_buffer(c->wl_shm, w, h, &c->pop_pool, &c->pop_buf, &c->pop_pix) <
-      0)
+  p->map_w = w;
+  p->map_h = h;
+  if (wl_make_buffer(c->wl_shm, w, h, &p->pool, &p->buf, &p->pix) < 0)
     return -1;
-  wl_buffer_add_listener(c->pop_buf, &pop_buf_listener, c);
+  wl_buffer_add_listener(p->buf, &pop_buf_listener, c);
 
-  wl_surface_commit(c->pop_surf);
+  wl_surface_commit(p->surf);
   wl_display_roundtrip(c->wl_dpy);
   LOG_INFO("popup created: %dx%d r=%d", w, h, r);
   return 0;
 }
 
-static void wl_popup_set_position(lbar_ctx *c, int x, int y) {
-  c->pop_x = x;
-  c->pop_y = y;
-  if (!c->pop_layer)
+static void wl_popup_set_position(lbar_ctx *c, lbar_popup_t *p, int x, int y) {
+  p->x = x;
+  p->y = y;
+  if (!p->layer)
     return;
-  zwlr_ls_set_margin(c->pop_layer, y, 0, 0, x);
-  wl_surface_commit(c->pop_surf);
-}
-static void wl_popup_show(lbar_ctx *c) {
-  c->pop_visible = 1;
-  /* 允许重新 attach buffer；否则 hide 之后 buffer 永远刷不上去 */
-  c->pop_busy = 0;
-  if (c->pop_surf)
-    wl_surface_commit(c->pop_surf);
-  wl_display_flush(c->wl_dpy);
-  LOG_INFO("popup show at (%d,%d)", c->pop_x, c->pop_y);
+  zwlr_ls_set_margin(p->layer, y, 0, 0, x);
+  if (p->visible && p->surf) {
+    wl_surface_commit(p->surf);
+    wl_display_flush(c->wl_dpy);
+  }
 }
 
-static void wl_popup_hide(lbar_ctx *c) {
-  c->pop_visible = 0;
-  if (c->pop_surf) {
-    wl_surface_attach(c->pop_surf, NULL, 0, 0);
-    wl_surface_commit(c->pop_surf);
+static void wl_popup_show(lbar_ctx *c, lbar_popup_t *p) {
+  p->visible = 1;
+  p->busy = 0;
+  if (p->surf) {
+    zwlr_ls_set_margin(p->layer, p->y, 0, 0, p->x);
+    wl_surface_commit(p->surf);
   }
-  c->pop_busy = 0; /* 关键：让下次 flush 能重新 attach */
   wl_display_flush(c->wl_dpy);
-  LOG_INFO("popup hide");
 }
-/* ===================================================================
-   X11
-   =================================================================== */
+
+static void wl_popup_hide(lbar_ctx *c, lbar_popup_t *p) {
+  p->visible = 0;
+  if (p->surf) {
+    wl_surface_attach(p->surf, NULL, 0, 0);
+    wl_surface_commit(p->surf);
+  }
+  p->busy = 0;
+  wl_display_flush(c->wl_dpy);
+}
+
 static int x_error_handler(Display *d, XErrorEvent *e) {
   LOG_WARN("X error: code=%d req=%d.%d resource=0x%lx", e->error_code,
            e->request_code, e->minor_code, e->resourceid);
@@ -744,41 +749,70 @@ static int x_open(lbar_ctx *c) {
   c->x_depth = DefaultDepth(c->x_dpy, c->x_screen);
   c->screen_w = DisplayWidth(c->x_dpy, c->x_screen);
   c->screen_h = DisplayHeight(c->x_dpy, c->x_screen);
+  XSelectInput(c->x_dpy, c->x_root, KeyPressMask);
   LOG_INFO("x11 connected: %dx%d depth=%d", c->screen_w, c->screen_h,
            c->x_depth);
   return 0;
 }
 
-static int x_create_bar(lbar_ctx *c, int h, int pos) {
-  int y = (pos == 0) ? 0 : (c->screen_h - h);
+static void x_apply_round_mask(lbar_ctx *c, Window win, int w, int h, int r) {
+  Pixmap mask = XCreatePixmap(c->x_dpy, win, w, h, 1);
+  GC gc = XCreateGC(c->x_dpy, mask, 0, NULL);
+  XSetForeground(c->x_dpy, gc, 0);
+  XFillRectangle(c->x_dpy, mask, gc, 0, 0, w, h);
+  XSetForeground(c->x_dpy, gc, 1);
+  if (r <= 0 || r * 2 > w || r * 2 > h) {
+    XFillRectangle(c->x_dpy, mask, gc, 0, 0, w, h);
+  } else {
+    XFillRectangle(c->x_dpy, mask, gc, r, 0, w - 2 * r, h);
+    XFillRectangle(c->x_dpy, mask, gc, 0, r, r, h - 2 * r);
+    XFillRectangle(c->x_dpy, mask, gc, w - r, r, r, h - 2 * r);
+    int D = 64;
+    XFillArc(c->x_dpy, mask, gc, 0, 0, 2 * r, 2 * r, 90 * D, 90 * D);
+    XFillArc(c->x_dpy, mask, gc, w - 2 * r, 0, 2 * r, 2 * r, 0, 90 * D);
+    XFillArc(c->x_dpy, mask, gc, 0, h - 2 * r, 2 * r, 2 * r, 180 * D, 90 * D);
+    XFillArc(c->x_dpy, mask, gc, w - 2 * r, h - 2 * r, 2 * r, 2 * r, 270 * D,
+             90 * D);
+  }
+  XFreeGC(c->x_dpy, gc);
+  XShapeCombineMask(c->x_dpy, win, ShapeBounding, 0, 0, mask, ShapeSet);
+  XFreePixmap(c->x_dpy, mask);
+}
+
+static int x_create_bar(lbar_ctx *c, int h, int pos, int margin) {
+  if (margin < 0)
+    margin = 0;
+  int bw = c->screen_w - 2 * margin;
+  if (bw < 32)
+    bw = 32;
+  int y = (pos == 0) ? margin : (c->screen_h - h - margin);
   XSetWindowAttributes a;
   memset(&a, 0, sizeof(a));
-  /* 不再使用 override_redirect：必须让 WM 接管，strut 才会被处理 */
   a.override_redirect = 0;
   a.background_pixel = 0x1c1c1e;
   a.border_pixel = 0x1c1c1e;
   unsigned long mask = CWBackPixel | CWBorderPixel;
 
   c->x_bar_win =
-      XCreateWindow(c->x_dpy, c->x_root, 0, y, c->screen_w, h, 0, c->x_depth,
+      XCreateWindow(c->x_dpy, c->x_root, margin, y, bw, h, 0, c->x_depth,
                     InputOutput, CopyFromParent, mask, &a);
 
   long evmask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
                 PointerMotionMask | EnterWindowMask | LeaveWindowMask;
   XSelectInput(c->x_dpy, c->x_bar_win, evmask);
   c->x_bar_gc = XCreateGC(c->x_dpy, c->x_bar_win, 0, NULL);
+  if (margin > 0)
+    x_apply_round_mask(c, c->x_bar_win, bw, h, h / 2);
 
-  /* 告诉 WM 我们想要的位置和尺寸，避免它重新摆放 */
   XSizeHints hints;
   memset(&hints, 0, sizeof(hints));
   hints.flags = PPosition | PSize;
-  hints.x = 0;
+  hints.x = margin;
   hints.y = y;
-  hints.width = c->screen_w;
+  hints.width = bw;
   hints.height = h;
   XSetWMNormalHints(c->x_dpy, c->x_bar_win, &hints);
 
-  /* ---- EWMH 属性：必须在 XMapWindow 之前设置 ---- */
   Atom type = XInternAtom(c->x_dpy, "_NET_WM_WINDOW_TYPE", 0);
   Atom dock = XInternAtom(c->x_dpy, "_NET_WM_WINDOW_TYPE_DOCK", 0);
   XChangeProperty(c->x_dpy, c->x_bar_win, type, XA_ATOM, 32, PropModeReplace,
@@ -798,15 +832,14 @@ static int x_create_bar(lbar_ctx *c, int h, int pos) {
   XChangeProperty(c->x_dpy, c->x_bar_win, state, XA_ATOM, 32, PropModeReplace,
                   (unsigned char *)states, 4);
 
-  /* ---- strut：保留原有逻辑 ---- */
   Atom strut = XInternAtom(c->x_dpy, "_NET_WM_STRUT_PARTIAL", 0);
   unsigned long s[12] = {0};
   if (pos == 0) {
-    s[2] = h;
+    s[2] = h + margin;
     s[8] = 0;
     s[9] = c->screen_w;
   } else {
-    s[3] = h;
+    s[3] = h + margin;
     s[10] = 0;
     s[11] = c->screen_w;
   }
@@ -816,94 +849,68 @@ static int x_create_bar(lbar_ctx *c, int h, int pos) {
   Atom strut4 = XInternAtom(c->x_dpy, "_NET_WM_STRUT", 0);
   unsigned long s4[4] = {0};
   if (pos == 0)
-    s4[2] = h;
+    s4[2] = h + margin;
   else
-    s4[3] = h;
+    s4[3] = h + margin;
   XChangeProperty(c->x_dpy, c->x_bar_win, strut4, XA_CARDINAL, 32,
                   PropModeReplace, (unsigned char *)s4, 4);
 
   XMapWindow(c->x_dpy, c->x_bar_win);
   XFlush(c->x_dpy);
 
-  c->bar_w = c->screen_w;
+  c->bar_w = bw;
   c->bar_h = h;
-  LOG_INFO("bar created: %dx%d pos=%s", c->bar_w, c->bar_h,
-           pos == 0 ? "top" : "bottom");
+  LOG_INFO("bar created: %dx%d pos=%s margin=%d", c->bar_w, c->bar_h,
+           pos == 0 ? "top" : "bottom", margin);
   return 0;
 }
 
-static int x_create_popup(lbar_ctx *c, int w, int h, int r) {
-  c->x_popup_w = w;
-  c->x_popup_h = h;
-  c->x_popup_r = r;
+static int x_create_popup(lbar_ctx *c, lbar_popup_t *p, int w, int h, int r) {
+  p->w = w;
+  p->h = h;
+  p->r = r;
   XSetWindowAttributes a;
   memset(&a, 0, sizeof(a));
   a.override_redirect = 1;
-  a.background_pixel = 0x1c1c1e;
+  a.background_pixmap = None;
   a.border_pixel = 0x1c1c1e;
   unsigned long mask = CWOverrideRedirect | CWBackPixel | CWBorderPixel;
 
-  c->x_popup_win = XCreateWindow(c->x_dpy, c->x_root, 0, 0, w, h, 0, c->x_depth,
-                                 InputOutput, CopyFromParent, mask, &a);
+  p->x_win = XCreateWindow(c->x_dpy, c->x_root, 0, 0, w, h, 0, c->x_depth,
+                           InputOutput, CopyFromParent, mask, &a);
   long evmask =
       ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
-  XSelectInput(c->x_dpy, c->x_popup_win, evmask);
-  c->x_popup_gc = XCreateGC(c->x_dpy, c->x_popup_win, 0, NULL);
+  XSelectInput(c->x_dpy, p->x_win, evmask);
+  p->x_gc = XCreateGC(c->x_dpy, p->x_win, 0, NULL);
 
-  c->x_popup_mask = XCreatePixmap(c->x_dpy, c->x_popup_win, w, h, 1);
-  GC gc = XCreateGC(c->x_dpy, c->x_popup_mask, 0, NULL);
-  XSetForeground(c->x_dpy, gc, 0);
-  XFillRectangle(c->x_dpy, c->x_popup_mask, gc, 0, 0, w, h);
-  XSetForeground(c->x_dpy, gc, 1);
-  if (r <= 0 || r * 2 >= w || r * 2 >= h) {
-    XFillRectangle(c->x_dpy, c->x_popup_mask, gc, 0, 0, w, h);
-  } else {
-    XFillRectangle(c->x_dpy, c->x_popup_mask, gc, r, 0, w - 2 * r, h);
-    XFillRectangle(c->x_dpy, c->x_popup_mask, gc, 0, r, r, h - 2 * r);
-    XFillRectangle(c->x_dpy, c->x_popup_mask, gc, w - r, r, r, h - 2 * r);
-    int D = 64;
-    XFillArc(c->x_dpy, c->x_popup_mask, gc, 0, 0, 2 * r, 2 * r, 90 * D, 90 * D);
-    XFillArc(c->x_dpy, c->x_popup_mask, gc, w - 2 * r, 0, 2 * r, 2 * r, 0,
-             90 * D);
-    XFillArc(c->x_dpy, c->x_popup_mask, gc, 0, h - 2 * r, 2 * r, 2 * r, 180 * D,
-             90 * D);
-    XFillArc(c->x_dpy, c->x_popup_mask, gc, w - 2 * r, h - 2 * r, 2 * r, 2 * r,
-             270 * D, 90 * D);
-  }
-  XFreeGC(c->x_dpy, gc);
-  XShapeCombineMask(c->x_dpy, c->x_popup_win, ShapeBounding, 0, 0,
-                    c->x_popup_mask, ShapeSet);
+  x_apply_round_mask(c, p->x_win, w, h, r);
   LOG_INFO("popup created: %dx%d r=%d", w, h, r);
   return 0;
 }
 
-static void x_popup_move(lbar_ctx *c, int x, int y) {
-  if (c->x_popup_win)
-    XMoveWindow(c->x_dpy, c->x_popup_win, x, y);
+static void x_popup_move(lbar_ctx *c, lbar_popup_t *p, int x, int y) {
+  if (p->x_win)
+    XMoveWindow(c->x_dpy, p->x_win, x, y);
 }
-static void x_popup_show(lbar_ctx *c) {
-  if (c->x_popup_win) {
-    XMapWindow(c->x_dpy, c->x_popup_win);
-    XRaiseWindow(c->x_dpy, c->x_popup_win);
+static void x_popup_show(lbar_ctx *c, lbar_popup_t *p) {
+  if (p->x_win) {
+    XMapWindow(c->x_dpy, p->x_win);
+    XRaiseWindow(c->x_dpy, p->x_win);
     XFlush(c->x_dpy);
-    c->x_popup_visible = 1;
-    /* 不再 XGrabPointer：抓取会让整个 X 会话失去响应 */
+    p->visible = 1;
     LOG_INFO("popup show");
   }
 }
 
-static void x_popup_hide(lbar_ctx *c) {
-  if (!c->x_popup_visible)
+static void x_popup_hide(lbar_ctx *c, lbar_popup_t *p) {
+  if (!p->visible)
     return;
-  c->x_popup_visible = 0;
-  XUnmapWindow(c->x_dpy, c->x_popup_win);
+  p->visible = 0;
+  XUnmapWindow(c->x_dpy, p->x_win);
   XFlush(c->x_dpy);
   LOG_INFO("popup hide");
 }
 
-/* ===================================================================
-   Public API
-   =================================================================== */
 lbar_ctx *lbar_open(void) {
   lbar_ctx *c = calloc(1, sizeof(*c));
   if (!c)
@@ -912,8 +919,6 @@ lbar_ctx *lbar_open(void) {
   if (getenv("WAYLAND_DISPLAY") && getenv("WAYLAND_DISPLAY")[0]) {
     c->is_wayland = 1;
     if (wl_open(c) == 0) {
-      /* Wayland doesn't give us the output size without a listener;
-         use X11 as a side-channel to measure. */
       Display *tmp = XOpenDisplay(NULL);
       if (tmp) {
         c->screen_w = DisplayWidth(tmp, DefaultScreen(tmp));
@@ -950,8 +955,39 @@ int lbar_screen_h(lbar_ctx *c) { return c->screen_h; }
 int lbar_bar_width(lbar_ctx *c) { return c->bar_w; }
 int lbar_bar_height(lbar_ctx *c) { return c->bar_h; }
 
-int lbar_bar_create(lbar_ctx *c, int h, int pos) {
-  return c->is_wayland ? wl_create_bar(c, h, pos) : x_create_bar(c, h, pos);
+int lbar_bar_create(lbar_ctx *c, int h, int pos, int margin) {
+  return c->is_wayland ? wl_create_bar(c, h, pos, margin)
+                       : x_create_bar(c, h, pos, margin);
+}
+
+static void x_flush_pixels(lbar_ctx *c, Window win, GC gc,
+                           const uint32_t *pixels, int w, int h) {
+  Visual *vis = DefaultVisual(c->x_dpy, c->x_screen);
+  XImage *img =
+      XCreateImage(c->x_dpy, vis, (unsigned int)c->x_depth, ZPixmap, 0, NULL,
+                   w, h, 32, 0);
+  if (!img)
+    return;
+  img->data = calloc(1, (size_t)img->bytes_per_line * (size_t)h);
+  if (!img->data) {
+    img->data = NULL;
+    XDestroyImage(img);
+    return;
+  }
+  if (img->bits_per_pixel == 32) {
+    for (int y = 0; y < h; y++) {
+      memcpy(img->data + (size_t)y * img->bytes_per_line,
+             pixels + (size_t)y * w, (size_t)w * 4);
+    }
+  } else {
+    for (int y = 0; y < h; y++)
+      for (int x = 0; x < w; x++)
+        XPutPixel(img, x, y, pixels[(size_t)y * w + x]);
+  }
+  XSetFunction(c->x_dpy, gc, GXcopy);
+  XPutImage(c->x_dpy, win, gc, img, 0, 0, 0, 0, w, h);
+  XFlush(c->x_dpy);
+  XDestroyImage(img);
 }
 
 void lbar_bar_flush(lbar_ctx *c, const uint32_t *pixels) {
@@ -969,103 +1005,330 @@ void lbar_bar_flush(lbar_ctx *c, const uint32_t *pixels) {
     wl_display_flush(c->wl_dpy);
     c->bar_busy = 1;
   } else {
-    XImage *img = XCreateImage(c->x_dpy, DefaultVisual(c->x_dpy, c->x_screen),
-                               (unsigned int)c->x_depth, ZPixmap, 0,
-                               (char *)pixels, c->bar_w, c->bar_h, 32, 0);
-    if (!img)
-      return;
-    XPutImage(c->x_dpy, c->x_bar_win, c->x_bar_gc, img, 0, 0, 0, 0, c->bar_w,
-              c->bar_h);
-    XFlush(c->x_dpy);
-    img->data = NULL;
-    XDestroyImage(img);
+    x_flush_pixels(c, c->x_bar_win, c->x_bar_gc, pixels, c->bar_w, c->bar_h);
   }
+}
+
+static lbar_popup_t *popup_at(lbar_ctx *c, int id) {
+  if (id < 0 || id >= LBAR_POPUP_MAX || id >= c->n_popups)
+    return NULL;
+  return &c->popups[id];
 }
 
 int lbar_popup_create(lbar_ctx *c, int w, int h, int r) {
-  return c->is_wayland ? wl_create_popup(c, w, h, r)
-                       : x_create_popup(c, w, h, r);
-}
-void lbar_popup_move(lbar_ctx *c, int x, int y) {
-  if (c->is_wayland)
-    wl_popup_set_position(c, x, y);
-  else
-    x_popup_move(c, x, y);
-}
-void lbar_popup_show(lbar_ctx *c) {
-  if (c->is_wayland)
-    wl_popup_show(c);
-  else
-    x_popup_show(c);
-}
-void lbar_popup_hide(lbar_ctx *c) {
-  if (c->is_wayland)
-    wl_popup_hide(c);
-  else
-    x_popup_hide(c);
-}
-int lbar_popup_visible(lbar_ctx *c) {
-  return c->is_wayland ? c->pop_visible : c->x_popup_visible;
+  if (c->n_popups >= LBAR_POPUP_MAX)
+    return -1;
+  int id = c->n_popups++;
+  lbar_popup_t *p = &c->popups[id];
+  memset(p, 0, sizeof(*p));
+  int rc = c->is_wayland ? wl_popup_init(c, p, w, h, r)
+                         : x_create_popup(c, p, w, h, r);
+  if (rc != 0) {
+    c->n_popups--;
+    return -1;
+  }
+  return id;
 }
 
-void lbar_popup_flush(lbar_ctx *c, const uint32_t *pixels) {
+static void popup_destroy_slot(lbar_ctx *c, lbar_popup_t *p) {
   if (c->is_wayland) {
-    if (c->pop_map_w != c->pop_w || c->pop_map_h != c->pop_h) {
-      if (recreate_pop_buffer(c) < 0)
-        return;
-    }
-    if (c->pop_busy || !c->pop_buf)
-      return;
-    memcpy(c->pop_pix, pixels, (size_t)c->pop_w * c->pop_h * 4);
-    wl_surface_attach(c->pop_surf, c->pop_buf, 0, 0);
-    wl_surface_damage(c->pop_surf, 0, 0, c->pop_w, c->pop_h);
-    wl_surface_commit(c->pop_surf);
-    wl_display_flush(c->wl_dpy);
-    c->pop_busy = 1;
+    if (p->layer)
+      zwlr_ls_destroy(p->layer);
+    if (p->surf)
+      wl_surface_destroy(p->surf);
+    if (p->buf)
+      wl_buffer_destroy(p->buf);
+    if (p->pool)
+      wl_shm_pool_destroy(p->pool);
+    if (p->pix)
+      munmap(p->pix, (size_t)p->map_w * 4 * (size_t)p->map_h);
   } else {
-    XImage *img =
-        XCreateImage(c->x_dpy, DefaultVisual(c->x_dpy, c->x_screen),
-                     (unsigned int)c->x_depth, ZPixmap, 0, (char *)pixels,
-                     c->x_popup_w, c->x_popup_h, 32, 0);
-    if (!img)
-      return;
-    XPutImage(c->x_dpy, c->x_popup_win, c->x_popup_gc, img, 0, 0, 0, 0,
-              c->x_popup_w, c->x_popup_h);
+    if (p->x_gc)
+      XFreeGC(c->x_dpy, p->x_gc);
+    if (p->x_win)
+      XDestroyWindow(c->x_dpy, p->x_win);
     XFlush(c->x_dpy);
-    img->data = NULL;
-    XDestroyImage(img);
   }
 }
 
-/* ---- Events ---- */
+int lbar_popup_resize(lbar_ctx *c, int id, int w, int h) {
+  lbar_popup_t *p = popup_at(c, id);
+  if (!p || w <= 0 || h <= 0)
+    return -1;
+  if (p->w == w && p->h == h)
+    return 0;
+  int r = p->r;
+  popup_destroy_slot(c, p);
+  memset(p, 0, sizeof(*p));
+  int rc = c->is_wayland ? wl_popup_init(c, p, w, h, r)
+                         : x_create_popup(c, p, w, h, r);
+  return rc == 0 ? 0 : -1;
+}
+
+int lbar_kbd_grab(lbar_ctx *c, int id) {
+  if (c->is_wayland)
+    return -1;
+  lbar_popup_t *p = popup_at(c, id);
+  if (!p || !p->x_win)
+    return -1;
+  XGrabKeyboard(c->x_dpy, p->x_win, True, GrabModeAsync, GrabModeAsync,
+                CurrentTime);
+  XFlush(c->x_dpy);
+  return 0;
+}
+
+int lbar_kbd_ungrab(lbar_ctx *c) {
+  if (c->is_wayland)
+    return -1;
+  XUngrabKeyboard(c->x_dpy, CurrentTime);
+  XFlush(c->x_dpy);
+  return 0;
+}
+
+static Cursor s_ptr_cursor = None;
+
+int lbar_ptr_grab(lbar_ctx *c, int id) {
+  if (c->is_wayland)
+    return -1;
+  lbar_popup_t *p = popup_at(c, id);
+  if (!p || !p->x_win)
+    return -1;
+  if (s_ptr_cursor == None)
+    s_ptr_cursor = XCreateFontCursor(c->x_dpy, 34);
+  XGrabPointer(c->x_dpy, p->x_win, True,
+               ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+               GrabModeAsync, GrabModeAsync, None, s_ptr_cursor, CurrentTime);
+  XFlush(c->x_dpy);
+  return 0;
+}
+
+void lbar_ptr_ungrab(lbar_ctx *c) {
+  if (c->is_wayland)
+    return;
+  XUngrabPointer(c->x_dpy, CurrentTime);
+  if (s_ptr_cursor != None) {
+    XFreeCursor(c->x_dpy, s_ptr_cursor);
+    s_ptr_cursor = None;
+  }
+  XFlush(c->x_dpy);
+}
+
+int lbar_x_get_region(lbar_ctx *c, int x, int y, int w, int h,
+                      unsigned char *out, int out_max) {
+  if (c->is_wayland || w <= 0 || h <= 0 || out_max < w * h * 3)
+    return -1;
+  memset(out, 0, (size_t)w * h * 3);
+  int sx0 = x < 0 ? 0 : x;
+  int sy0 = y < 0 ? 0 : y;
+  int sx1 = x + w > c->screen_w ? c->screen_w : x + w;
+  int sy1 = y + h > c->screen_h ? c->screen_h : y + h;
+  if (sx1 <= sx0 || sy1 <= sy0)
+    return -1;
+  XImage *img = XGetImage(c->x_dpy, c->x_root, sx0, sy0,
+                          (unsigned int)(sx1 - sx0), (unsigned int)(sy1 - sy0),
+                          AllPlanes, ZPixmap);
+  if (!img)
+    return -1;
+  for (int gy = sy0; gy < sy1; gy++) {
+    for (int gx = sx0; gx < sx1; gx++) {
+      unsigned long px = XGetPixel(img, gx - sx0, gy - sy0);
+      int o = ((gy - y) * w + (gx - x)) * 3;
+      out[o] = (unsigned char)((px >> 16) & 0xff);
+      out[o + 1] = (unsigned char)((px >> 8) & 0xff);
+      out[o + 2] = (unsigned char)(px & 0xff);
+    }
+  }
+  XDestroyImage(img);
+  return 0;
+}
+
+void lbar_popup_move(lbar_ctx *c, int id, int x, int y) {
+  lbar_popup_t *p = popup_at(c, id);
+  if (!p)
+    return;
+  if (c->is_wayland)
+    wl_popup_set_position(c, p, x, y);
+  else
+    x_popup_move(c, p, x, y);
+}
+
+void lbar_popup_show(lbar_ctx *c, int id) {
+  lbar_popup_t *p = popup_at(c, id);
+  if (!p)
+    return;
+  if (c->is_wayland)
+    wl_popup_show(c, p);
+  else
+    x_popup_show(c, p);
+}
+
+void lbar_popup_hide(lbar_ctx *c, int id) {
+  lbar_popup_t *p = popup_at(c, id);
+  if (!p)
+    return;
+  if (c->is_wayland)
+    wl_popup_hide(c, p);
+  else
+    x_popup_hide(c, p);
+}
+
+int lbar_popup_visible(lbar_ctx *c) {
+  if (c->is_wayland) {
+    for (int i = 0; i < c->n_popups; i++)
+      if (c->popups[i].visible)
+        return 1;
+    return 0;
+  }
+  for (int i = 0; i < c->n_popups; i++)
+    if (c->popups[i].visible)
+      return 1;
+  return 0;
+}
+
+void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels) {
+  lbar_popup_t *p = popup_at(c, id);
+  if (!p)
+    return;
+  if (c->is_wayland) {
+    if (!p->visible)
+      return;
+    if (p->map_w != p->w || p->map_h != p->h) {
+      if (recreate_pop_buffer(c, p) < 0)
+        return;
+    }
+    if (p->busy || !p->buf || !p->surf)
+      return;
+    memcpy(p->pix, pixels, (size_t)p->w * p->h * 4);
+    wl_surface_attach(p->surf, p->buf, 0, 0);
+    wl_surface_damage(p->surf, 0, 0, p->w, p->h);
+    wl_surface_commit(p->surf);
+    wl_display_flush(c->wl_dpy);
+    p->busy = 1;
+  } else {
+    x_flush_pixels(c, p->x_win, p->x_gc, pixels, p->w, p->h);
+  }
+}
+
+int lbar_key_code(lbar_ctx *c, const char *name) {
+  if (c->is_wayland || !name || !name[0])
+    return 0;
+  KeySym sym = XStringToKeysym(name);
+  if (!sym) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%c%s", name[0] >= 'a' && name[0] <= 'z'
+                                           ? (char)(name[0] - 32)
+                                           : name[0],
+             name + 1);
+    sym = XStringToKeysym(buf);
+  }
+  if (!sym)
+    sym = XStringToKeysym(name);
+  if (!sym)
+    return 0;
+  return (int)XKeysymToKeycode(c->x_dpy, sym);
+}
+
+int lbar_key_grab(lbar_ctx *c, int code, int mask) {
+  if (c->is_wayland || code <= 0)
+    return -1;
+  static const int extra[4] = {0, LockMask, Mod2Mask, LockMask | Mod2Mask};
+  for (int i = 0; i < 4; i++)
+    XGrabKey(c->x_dpy, (int)code, (unsigned int)(mask | extra[i]), c->x_root, 0,
+             GrabModeAsync, GrabModeAsync);
+  XFlush(c->x_dpy);
+  return 0;
+}
+
+int lbar_key_ungrab_all(lbar_ctx *c) {
+  if (c->is_wayland)
+    return -1;
+  XUngrabKey(c->x_dpy, AnyKey, AnyModifier, c->x_root);
+  XFlush(c->x_dpy);
+  return 0;
+}
+
+long lbar_key_lookup(lbar_ctx *c, int keycode, int state, char *out,
+                     int out_max) {
+  if (c->is_wayland || !out || out_max <= 0)
+    return 0;
+  out[0] = 0;
+  XKeyEvent ev;
+  memset(&ev, 0, sizeof(ev));
+  ev.display = c->x_dpy;
+  ev.type = KeyPress;
+  ev.keycode = (KeyCode)keycode;
+  ev.state = (unsigned int)state;
+  ev.same_screen = True;
+  KeySym sym = 0;
+  int n = XLookupString(&ev, out, out_max - 1, &sym, NULL);
+  if (n < 0)
+    n = 0;
+  out[n] = 0;
+  return (long)sym;
+}
+
 static void drain_x11_events(lbar_ctx *c) {
   while (XPending(c->x_dpy) > 0) {
     XEvent e;
     XNextEvent(c->x_dpy, &e);
     if (e.type == Expose) {
+      int ptgt = 0;
+      for (int i = 0; i < c->n_popups; i++) {
+        if (e.xexpose.window == c->popups[i].x_win) {
+          ptgt = 1;
+          break;
+        }
+      }
       if (e.xexpose.window == c->x_bar_win)
-        ev_push(c, 4, 0, 0, 0, 0, 0, 0);
-      else if (e.xexpose.window == c->x_popup_win)
-        ev_push(c, 4, 0, 0, 0, 0, 0, 1);
+        ev_push(c, 4, 0, 0, 0, 0, 0, 0, 0, 0);
+      else if (ptgt)
+        ev_push(c, 4, 0, 0, 0, 0, 0, 1, 0, 0);
     } else if (e.type == MotionNotify) {
-      int tgt = (e.xmotion.window == c->x_popup_win) ? 1 : 0;
+      int tgt = 0;
+      for (int i = 0; i < c->n_popups; i++) {
+        if (e.xmotion.window == c->popups[i].x_win) {
+          tgt = 1;
+          break;
+        }
+      }
       ev_push(c, 1, e.xmotion.x, e.xmotion.y, e.xmotion.x_root,
-              e.xmotion.y_root, 0, tgt);
+              e.xmotion.y_root, 0, tgt, 0, 0);
     } else if (e.type == ButtonPress) {
-      int tgt = (e.xbutton.window == c->x_popup_win) ? 1 : 0;
+      int tgt = 0;
+      for (int i = 0; i < c->n_popups; i++) {
+        if (e.xbutton.window == c->popups[i].x_win) {
+          tgt = 1;
+          break;
+        }
+      }
       ev_push(c, 2, e.xbutton.x, e.xbutton.y, e.xbutton.x_root,
-              e.xbutton.y_root, e.xbutton.button, tgt);
+              e.xbutton.y_root, e.xbutton.button, tgt, 0, 0);
     } else if (e.type == ButtonRelease) {
-      int tgt = (e.xbutton.window == c->x_popup_win) ? 1 : 0;
+      int tgt = 0;
+      for (int i = 0; i < c->n_popups; i++) {
+        if (e.xbutton.window == c->popups[i].x_win) {
+          tgt = 1;
+          break;
+        }
+      }
       ev_push(c, 3, e.xbutton.x, e.xbutton.y, e.xbutton.x_root,
-              e.xbutton.y_root, e.xbutton.button, tgt);
+              e.xbutton.y_root, e.xbutton.button, tgt, 0, 0);
+    } else if (e.type == KeyPress) {
+      int ktgt = 2;
+      for (int i = 0; i < c->n_popups; i++) {
+        if (e.xkey.window == c->popups[i].x_win) {
+          ktgt = 1;
+          break;
+        }
+      }
+      ev_push(c, 5, 0, 0, e.xkey.x_root, e.xkey.y_root, 0, ktgt,
+              (int)e.xkey.keycode, (int)e.xkey.state);
     }
   }
 }
 
 int lbar_poll(lbar_ctx *c, int timeout_ms) {
   if (c->is_wayland) {
-    /* 删除 pop_visible && ptr_target==0 && leave_ms>300 的自动隐藏分支 */
     wl_display_dispatch_pending(c->wl_dpy);
     wl_display_flush(c->wl_dpy);
     struct pollfd pfd = {wl_display_get_fd(c->wl_dpy), POLLIN, 0};
@@ -1096,16 +1359,19 @@ void lbar_close(lbar_ctx *c) {
   if (!c)
     return;
   if (c->is_wayland) {
-    if (c->pop_surf)
-      wl_surface_destroy(c->pop_surf);
-    if (c->pop_layer)
-      zwlr_ls_destroy(c->pop_layer);
-    if (c->pop_buf)
-      wl_buffer_destroy(c->pop_buf);
-    if (c->pop_pool)
-      wl_shm_pool_destroy(c->pop_pool);
-    if (c->pop_pix)
-      munmap(c->pop_pix, (size_t)c->pop_map_w * c->pop_map_h * 4);
+    for (int i = 0; i < c->n_popups; i++) {
+      lbar_popup_t *p = &c->popups[i];
+      if (p->surf)
+        wl_surface_destroy(p->surf);
+      if (p->layer)
+        zwlr_ls_destroy(p->layer);
+      if (p->buf)
+        wl_buffer_destroy(p->buf);
+      if (p->pool)
+        wl_shm_pool_destroy(p->pool);
+      if (p->pix)
+        munmap(p->pix, (size_t)p->map_w * p->map_h * 4);
+    }
 
     if (c->bar_surf)
       wl_surface_destroy(c->bar_surf);
@@ -1136,12 +1402,13 @@ void lbar_close(lbar_ctx *c) {
       wl_display_disconnect(c->wl_dpy);
     LOG_INFO("wayland closed");
   } else {
-    if (c->x_popup_win)
-      XDestroyWindow(c->x_dpy, c->x_popup_win);
-    if (c->x_popup_gc)
-      XFreeGC(c->x_dpy, c->x_popup_gc);
-    if (c->x_popup_mask)
-      XFreePixmap(c->x_dpy, c->x_popup_mask);
+    for (int i = 0; i < c->n_popups; i++) {
+      lbar_popup_t *p = &c->popups[i];
+      if (p->x_win)
+        XDestroyWindow(c->x_dpy, p->x_win);
+      if (p->x_gc)
+        XFreeGC(c->x_dpy, p->x_gc);
+    }
     if (c->x_bar_win)
       XDestroyWindow(c->x_dpy, c->x_bar_win);
     if (c->x_bar_gc)

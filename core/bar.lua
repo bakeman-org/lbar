@@ -1,4 +1,4 @@
--- core/bar.lua
+-- core/bar.lua — MD3 floating bar
 local M = {}
 local ffi = require("ffi")
 
@@ -13,15 +13,22 @@ function M.new(ctx, cfg)
 	self.hover_plugin = nil
 	self.needs_redraw = true
 
-	self.h = cfg.height or 30
+	self.margin = tonumber(cfg.bar_margin) or 0
+	local lh = ctx.get_line_height()
+	local h_cfg = tonumber(cfg.height)
+	if cfg.height == nil or cfg.height == "auto" or h_cfg == nil then
+		self.h = lh + 18
+	else
+		self.h = h_cfg
+	end
 	self.pos = cfg.position or "top"
-	self.w = ctx.scr_w
-	self.x = 0
-	self.y = (self.pos == "top") and 0 or (ctx.scr_h - self.h)
-	self.padding = cfg.padding or 12
-	self.gap = cfg.gap or 10
+	self.w = ctx.scr_w - 2 * self.margin
+	self.x = self.margin
+	self.y = (self.pos == "top") and self.margin or (ctx.scr_h - self.h - self.margin)
+	self.padding = tonumber(cfg.padding) or 16
+	self.gap = tonumber(cfg.gap) or 10
 
-	local rc = ctx.L.lbar_bar_create(ctx.Lctx, self.h, self.pos == "top" and 0 or 1)
+	local rc = ctx.L.lbar_bar_create(ctx.Lctx, self.h, self.pos == "top" and 0 or 1, self.margin)
 	if rc ~= 0 then
 		return nil, "lbar_bar_create failed: " .. rc
 	end
@@ -32,7 +39,6 @@ function M.new(ctx, cfg)
 	return self
 end
 
--- ── Surface-like methods (so plugins can call s:text / s:rect / s:rrect) ──
 function Bar:clear(c)
 	self.ctx.L.surf_fill(self.surf, self.w, self.h, 0, 0, self.w, self.h, c)
 end
@@ -58,7 +64,7 @@ function Bar:add_plugin(name, mod)
 end
 
 function Bar:layout()
-	local x = self.padding
+	local total = 0
 	for _, p in ipairs(self.plugins) do
 		local w = 0
 		if p.mod.width then
@@ -67,9 +73,20 @@ function Bar:layout()
 				w = r
 			end
 		end
-		p.x = x
 		p.w = w
-		x = x + w + self.gap
+		total = total + w
+	end
+	local n = #self.plugins
+	local gap = self.gap
+	if n > 1 then
+		local avail = self.w - self.padding * 2
+		local fit = math.floor((avail - total) / (n - 1))
+		gap = math.max(2, math.min(self.gap, fit))
+	end
+	local x = self.padding
+	for _, p in ipairs(self.plugins) do
+		p.x = x
+		x = x + p.w + gap
 	end
 end
 
@@ -79,7 +96,6 @@ function Bar:sync_size()
 	if nw ~= self.w or nh ~= self.h then
 		self.w, self.h = nw, nh
 		self.surf = ffi.new("uint32_t[?]", self.w * self.h)
-		self.ctx.scr_w = self.w
 		self.needs_redraw = true
 	end
 end
@@ -87,7 +103,13 @@ end
 function Bar:draw()
 	self:sync_size()
 	local FT = self.ctx.L
-	FT.surf_fill(self.surf, self.w, self.h, 0, 0, self.w, self.h, self.cfg.bar_bg or 0x1c1c1e)
+	local T = self.ctx.theme
+	FT.surf_fill(self.surf, self.w, self.h, 0, 0, self.w, self.h, 0x00000000)
+	if self.margin > 0 then
+		FT.surf_rrect_aa(self.surf, self.w, self.h, 0, 0, self.w, self.h, self.h / 2, T.surface)
+	else
+		FT.surf_fill(self.surf, self.w, self.h, 0, 0, self.w, self.h, T.surface)
+	end
 	self:layout()
 
 	for _, p in ipairs(self.plugins) do
@@ -95,9 +117,8 @@ function Bar:draw()
 			local is_hover = (self.hover_plugin == p)
 			local is_active = (self.ctx.active_plugin_name == p.name and self.ctx.popup_visible)
 			if is_hover or is_active then
-				FT.surf_rrect_aa(self.surf, self.w, self.h, p.x - 6, 4, p.w + 12, self.h - 8, 6, 0x2a2a2d)
+				FT.surf_rrect_aa(self.surf, self.w, self.h, p.x - 6, 4, p.w + 12, self.h - 8, (self.h - 8) / 2, T.secondary_ctr)
 			end
-			-- pass the Bar itself — it exposes :text/:rect/:rrect/:clear
 			local ok, err = pcall(p.mod.draw, self.ctx, self, p.x, 0, p.w, self.h)
 			if not ok then
 				self.ctx.log("plugin %s draw: %s", p.name, tostring(err))
@@ -143,12 +164,12 @@ end
 function Bar:on_click(btn, mx, my)
 	local p = self:plugin_at(mx, my)
 	if p and p.mod.on_click then
-		local ok, err = pcall(p.mod.on_click, self.ctx, btn, mx - p.x, my, p.x, p.w)
+		local ok, err = pcall(p.mod.on_click, self.ctx, btn, mx - p.x, my, p.x + self.margin, p.w)
 		if not ok then
 			self.ctx.log("plugin %s on_click: %s", p.name, tostring(err))
 		end
 	elseif self.ctx.popup_visible then
-		self.ctx.close_popup()
+		self.ctx.close_panels()
 	end
 end
 

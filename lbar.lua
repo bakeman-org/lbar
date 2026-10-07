@@ -9,13 +9,16 @@ package.cpath = SCRIPT_DIR .. "/?.so;" .. package.cpath
 local init = require("core.init")(SCRIPT_DIR)
 local Bar = require("core.bar")
 local PluginMgr = require("core.plugins")
+local Keybinds = require("core.keybinds")
+local Toast = require("core.toast")
+local Theme = require("core.theme")
 local Util = require("core.util")
 local ffi = init.ffi
 local libc = init.libc
 local L = init.L
+local AUD = init.AUD
 local log = Util.logger("lbar")
 
--- ── config ──────────────────────────────────────────────
 local CONFIG_PATH = (arg[1] and arg[1] ~= "") and arg[1] or (SCRIPT_DIR .. "/config.lua")
 
 local function resolve_path(p)
@@ -42,7 +45,6 @@ end
 
 local config = normalize(dofile(CONFIG_PATH))
 
--- ── backend ─────────────────────────────────────────────
 local Lctx = L.lbar_open()
 if Lctx == nil then
 	error("lbar_open failed")
@@ -50,14 +52,13 @@ end
 local kind = ffi.string(L.lbar_backend(Lctx))
 log("backend: %s", kind)
 
--- ── FreeType ────────────────────────────────────────────
 if L.xft_init() ~= 0 then
 	error("FreeType init failed")
 end
 
 local function load_font(cfg)
 	local fb = table.concat(cfg.fallback_font_paths or {}, "\n")
-	return L.xft_load(cfg.font_path, cfg.font_size or 14, #fb > 0 and fb or nil)
+	return L.xft_load(cfg.font_path, tonumber(cfg.font_size) or 14, #fb > 0 and fb or nil)
 end
 
 local ft_ctx = load_font(config)
@@ -65,7 +66,6 @@ if ft_ctx == nil then
 	error("font load failed: " .. config.font_path)
 end
 
--- ── ctx ─────────────────────────────────────────────────
 local ctx = {
 	SCRIPT_DIR = SCRIPT_DIR,
 	ffi = ffi,
@@ -76,8 +76,11 @@ local ctx = {
 	theme = {},
 	log = log,
 	backend_kind = kind,
+	actions = {},
+	AUD = AUD,
 	popup_visible = false,
 	active_plugin_name = nil,
+	active_panel = nil,
 }
 ctx.scr_w = L.lbar_screen_w(Lctx)
 ctx.scr_h = L.lbar_screen_h(Lctx)
@@ -91,36 +94,28 @@ function ctx.get_line_height()
 	return L.xft_primary_line_height(ft_ctx)
 end
 
-local function build_theme(cfg)
-	return {
-		bg = cfg.bg or 0x1e1e2e,
-		fg = cfg.fg or 0xe6e1e5,
-		dim = cfg.dim or 0x98989d,
-		accent = cfg.accent or 0x0a84ff,
-		accent_hi = cfg.accent_hi or 0x3a9bff,
-		warn = cfg.warn or 0xff9f0a,
-		crit = cfg.crit or 0xff453a,
-		good = cfg.good or 0x30d158,
-		surface = cfg.surface or 0x2c2c2e,
-		bar_bg = cfg.bar_bg or 0x1c1c1e,
-	}
-end
-ctx.theme = build_theme(config)
-
--- ── popup registry (defined before plugin load) ─────────
-local popups = {}
-
-function ctx.register_popup(name, popup)
-	popups[name] = popup
+ctx.theme = Theme.build(config)
+ctx.toast = Toast.new(ctx)
+ctx.notify = function(text, opts)
+	ctx.toast:show(text, opts)
 end
 
-function ctx.show_popup(name, anchor_x, anchor_y, direction)
-	for n, p in pairs(popups) do
-		if p.visible and n ~= name then
-			p:hide()
+local panels = {}
+
+function ctx.register_panel(name, panel)
+	panels[name] = panel
+	ctx.actions["toggle_" .. name] = function()
+		ctx.toggle_panel(name)
+	end
+end
+
+function ctx.show_panel(name, anchor_x, anchor_y, direction)
+	for n, p in pairs(panels) do
+		if n ~= name and p.visible then
+			p:hide(true)
 		end
 	end
-	local p = popups[name]
+	local p = panels[name]
 	if not p then
 		return
 	end
@@ -132,26 +127,62 @@ function ctx.show_popup(name, anchor_x, anchor_y, direction)
 		end
 		return
 	end
-	p:show(anchor_x, anchor_y, direction)
+	if anchor_x then
+		p:show_at(anchor_x, anchor_y, direction)
+	else
+		p:show()
+	end
+	ctx.active_panel = p
 	ctx.active_plugin_name = name
 	if ctx.bar then
 		ctx.bar.needs_redraw = true
 	end
 end
 
-function ctx.close_popup()
-	for _, p in pairs(popups) do
+function ctx.toggle_panel(name)
+	local p = panels[name]
+	if not p then
+		return
+	end
+	if p.visible then
+		ctx.show_panel(name)
+		return
+	end
+	if p.user_pos then
+		ctx.show_panel(name)
+		return
+	end
+	local a = p.last_anchor
+	if a then
+		ctx.show_panel(name, a.x, a.y, a.dir)
+	else
+		ctx.show_panel(name)
+	end
+end
+
+function ctx.close_panels()
+	for _, p in pairs(panels) do
 		if p.visible then
 			p:hide()
 		end
 	end
 	ctx.active_plugin_name = nil
+	ctx.active_panel = nil
 	if ctx.bar then
 		ctx.bar.needs_redraw = true
 	end
 end
 
--- ── bar ─────────────────────────────────────────────────
+local actions = ctx.actions
+actions.quit = function()
+	os.exit(0)
+end
+actions.close_panels = function()
+	ctx.close_panels()
+end
+actions.hot_reload = nil
+actions.toggle_auto_reload = nil
+
 local function build_bar(cfg)
 	local bar, err = Bar.new(ctx, cfg)
 	if not bar then
@@ -167,7 +198,8 @@ if not bar then
 end
 ctx.bar = bar
 
--- ── hot reload ──────────────────────────────────────────
+local keybinds = Keybinds.new(ctx)
+
 local function watch_paths(cfg)
 	local paths = { CONFIG_PATH }
 	for _, name in ipairs(cfg.plugins or {}) do
@@ -178,6 +210,8 @@ end
 
 local wpaths = watch_paths(config)
 local wmtimes = PluginMgr.snapshot_mtimes(wpaths)
+local auto_reload = true
+local theme_dark = true
 
 local function reload_all()
 	local ok, newcfg = pcall(dofile, CONFIG_PATH)
@@ -194,15 +228,19 @@ local function reload_all()
 		font_changed = a ~= b
 	end
 
-	ctx.close_popup()
+	ctx.close_panels()
+	ctx.toast:invalidate()
 	bar:destroy()
-
-	-- reset popups BEFORE plugins re-register their popups
-	popups = {}
+	for _, p in pairs(ctx._panels or {}) do
+		p:destroy()
+	end
+	ctx._panels = {}
+	panels = {}
 
 	config = newcfg
 	ctx.config = config
-	ctx.theme = build_theme(config)
+	ctx.theme = Theme.build(config)
+	theme_dark = true
 
 	if font_changed then
 		local ok_f, nf = pcall(load_font, config)
@@ -229,12 +267,45 @@ local function reload_all()
 	end
 	ctx.bar = bar
 
+	keybinds.build(config.keybinds)
+
 	wpaths = watch_paths(config)
 	wmtimes = PluginMgr.snapshot_mtimes(wpaths)
 	log("hot reload done: %s @ %s h=%d plugins=%d", kind, bar.pos, bar.h, #bar.plugins)
 end
 
--- ── event loop ──────────────────────────────────────────
+actions.hot_reload = reload_all
+actions.toggle_auto_reload = function()
+	auto_reload = not auto_reload
+	ctx.notify(auto_reload and "auto reload on" or "auto reload off", { style = "info" })
+end
+actions.hide_all_windows = function()
+	ctx.close_panels()
+end
+
+actions.toggle_theme = function()
+	theme_dark = not theme_dark
+	local name = theme_dark and (config.theme or "md3_dark") or (config.theme_light or "md3_light")
+	ctx.theme = Theme.build({ theme = name })
+	for _, p in pairs(panels) do
+		p.bg = ctx.theme.bg
+	end
+	if ctx.toast.panel then
+		ctx.toast.panel.bg = ctx.theme.bg
+	end
+	if ctx.bar then
+		ctx.bar.needs_redraw = true
+	end
+	for _, p in pairs(panels) do
+		if p.visible then
+			p:draw()
+		end
+	end
+	ctx.notify("theme: " .. name, { style = "info" })
+end
+
+keybinds.build(config.keybinds)
+
 ffi.cdef([[
   typedef struct { long tv_sec; long tv_nsec; } lbar_ts;
 ]])
@@ -250,6 +321,19 @@ local watch_accum = 0
 local last_tick = now_ms()
 local ev = ffi.new("lbar_event_t")
 
+local function visible_panel()
+	local ap = ctx.active_panel
+	if ap and ap.visible then
+		return ap
+	end
+	for _, p in pairs(panels) do
+		if p.visible then
+			return p
+		end
+	end
+	return nil
+end
+
 log("lbar running (%s, %dx%d, plugins=%d)", kind, ctx.scr_w, ctx.scr_h, #bar.plugins)
 
 while true do
@@ -264,39 +348,70 @@ while true do
 			else
 				local vis = L.lbar_popup_visible(Lctx) ~= 0
 				ctx.popup_visible = vis
-				if not vis then
-					-- backend hid the surface; sync Lua-side state too
-					for _, p in pairs(popups) do
+				if vis then
+					if ctx.active_panel then
+						ctx.active_panel:draw()
+					end
+				else
+					for _, p in pairs(panels) do
 						p.visible = false
 					end
 					ctx.active_plugin_name = nil
+					ctx.active_panel = nil
 					bar.needs_redraw = true
 				end
 			end
 		elseif t == 1 then
 			if tgt == 1 then
-				for _, p in pairs(popups) do
-					if p.visible then
-						p:on_motion(ev.x, ev.y)
-						break
-					end
+				local p = visible_panel()
+				if p then
+					p:on_motion(ev.x, ev.y, ev.root_x, ev.root_y)
 				end
 			else
 				bar:on_motion(ev.x, ev.y)
 			end
 		elseif t == 2 then
 			if tgt == 1 then
-				for _, p in pairs(popups) do
-					if p.visible then
-						p:on_press(ev.button, ev.x, ev.y)
-						break
+				local p = visible_panel()
+				if p then
+					if (ev.x < 0 or ev.y < 0 or ev.x >= p.w or ev.y >= p.h)
+						and p.opts.ptr_grab ~= false then
+						p:hide()
+					else
+						p:on_press(ev.button, ev.x, ev.y, ev.root_x, ev.root_y)
 					end
 				end
 			else
 				bar:on_click(ev.button, ev.x, ev.y)
 			end
+		elseif t == 3 then
+			if tgt == 1 then
+				local p = visible_panel()
+				if p then
+					p:on_release(ev.button, ev.x, ev.y, ev.root_x, ev.root_y)
+				end
+			end
+		elseif t == 5 then
+			if tgt == 1 then
+				if ctx.active_panel and ctx.active_panel.kbd then
+					ctx.active_panel:on_key(ev.keycode, ev.keystate)
+				end
+			else
+				local action = keybinds.lookup(ev.keycode, ev.keystate)
+				if action and actions[action] then
+					local ok, aerr = pcall(actions[action])
+					if not ok then
+						log("action %s error: %s", action, tostring(aerr))
+					end
+				end
+			end
 		end
 	end
+
+	for _, p in pairs(panels) do
+		p:tick(16)
+	end
+	ctx.toast:tick(16)
 
 	local now = now_ms()
 	local dt = now - last_tick
@@ -304,12 +419,14 @@ while true do
 		bar:tick(dt)
 		last_tick = now
 
-		watch_accum = watch_accum + dt
-		if watch_accum >= WATCH_MS then
-			watch_accum = 0
-			if PluginMgr.watch(ctx, bar, wpaths, wmtimes) then
-				log("change detected, reloading...")
-				reload_all()
+		if auto_reload then
+			watch_accum = watch_accum + dt
+			if watch_accum >= WATCH_MS then
+				watch_accum = 0
+				if PluginMgr.watch(ctx, bar, wpaths, wmtimes) then
+					log("change detected, reloading...")
+					reload_all()
+				end
 			end
 		end
 	end

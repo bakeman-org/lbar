@@ -11,6 +11,8 @@ return function(SCRIPT_DIR)
       int root_x, root_y;
       int button;
       int target;
+      int keycode;
+      int keystate;
     } lbar_event_t;
 
     lbar_ctx   *lbar_open(void);
@@ -20,15 +22,27 @@ return function(SCRIPT_DIR)
     int  lbar_screen_h(lbar_ctx *c);
     int  lbar_bar_width(lbar_ctx *c);
     int  lbar_bar_height(lbar_ctx *c);
-    int  lbar_bar_create(lbar_ctx *c, int h, int pos);
+    int  lbar_bar_create(lbar_ctx *c, int h, int pos, int margin);
     void lbar_bar_flush(lbar_ctx *c, const uint32_t *pixels);
 
     int  lbar_popup_create(lbar_ctx *c, int w, int h, int r);
-    void lbar_popup_move(lbar_ctx *c, int x, int y);
-    void lbar_popup_show(lbar_ctx *c);
-    void lbar_popup_hide(lbar_ctx *c);
+    int  lbar_popup_resize(lbar_ctx *c, int id, int w, int h);
+    void lbar_popup_move(lbar_ctx *c, int id, int x, int y);
+    void lbar_popup_show(lbar_ctx *c, int id);
+    void lbar_popup_hide(lbar_ctx *c, int id);
     int  lbar_popup_visible(lbar_ctx *c);
-    void lbar_popup_flush(lbar_ctx *c, const uint32_t *pixels);
+    void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels);
+
+    int lbar_key_code(lbar_ctx *c, const char *name);
+    int lbar_key_grab(lbar_ctx *c, int code, int mask);
+    int lbar_key_ungrab_all(lbar_ctx *c);
+    int lbar_kbd_grab(lbar_ctx *c, int id);
+    int lbar_kbd_ungrab(lbar_ctx *c);
+    int  lbar_ptr_grab(lbar_ctx *c, int id);
+    void lbar_ptr_ungrab(lbar_ctx *c);
+    int  lbar_x_get_region(lbar_ctx *c, int x, int y, int w, int h,
+                           unsigned char *out, int out_max);
+    int64_t lbar_key_lookup(lbar_ctx *c, int keycode, int state, char *out, int out_max);
 
     int  lbar_poll(lbar_ctx *c, int timeout_ms);
     int  lbar_next_event(lbar_ctx *c, lbar_event_t *out);
@@ -47,9 +61,32 @@ return function(SCRIPT_DIR)
 
     typedef struct { long tv_sec; long tv_nsec; } lbar_ts;
     int clock_gettime(int clk, lbar_ts *tp);
+
+    int audio_init(void);
+    void audio_shutdown(void);
+    int audio_play(const char *path);
+    void audio_toggle_pause(void);
+    void audio_stop(void);
+    int audio_is_playing(void);
+    int audio_is_paused(void);
+    void audio_set_volume(int v0_100);
+    double audio_get_position(void);
+    double audio_get_duration(void);
+    int audio_scan_dir(const char *dir);
+    const char *audio_scan_get(int idx);
+    void audio_seek(double sec);
+    double audio_probe_duration(const char *path);
+    int audio_play_sfx(const char *path, int vol_0_100);
+    int audio_finished(void);
   ]])
 
 	local libc = ffi.load("c")
 	local L = ffi.load(SCRIPT_DIR .. "/lbar.so")
-	return { ffi = ffi, libc = libc, L = L }
+	local has_aud, AUD = pcall(function()
+		return ffi.load(SCRIPT_DIR .. "/lbar_audio.so")
+	end)
+	if not has_aud then
+		AUD = nil
+	end
+	return { ffi = ffi, libc = libc, L = L, AUD = AUD }
 end
