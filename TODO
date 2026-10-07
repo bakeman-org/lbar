@@ -1,3 +1,60 @@
+log.x11:
+make run 
+cc -O2 -fPIC -Wall -Wextra -Wno-unused-parameter -I/usr/include/freetype2 -I/usr/include/libpng16 -I/usr/include/harfbuzz -I/usr/include/glib-2.0 -I/usr/lib/x86_64-linux-gnu/glib-2.0/include -I/usr/include/sysprof-6 -pthread -I/usr/local/include  -shared -o lbar.so src/text.c src/backends.c -lfreetype -lharfbuzz -lX11 -lXext -L/usr/local/lib/x86_64-linux-gnu -lwayland-client -lm 
+src/backends.c: In function ‘ipc_init’:
+src/backends.c:309:3: warning: ‘strncpy’ output may be truncated copying 107 bytes from a string of length 127 [-Wstringop-truncation]
+  309 |   strncpy(addr.sun_path, c->ipc_path, sizeof(addr.sun_path) - 1);
+      |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+cc -O2 -fPIC -Wall -Wextra -Wno-unused-parameter -I/usr/include/freetype2 -I/usr/include/libpng16 -I/usr/include/harfbuzz -I/usr/include/glib-2.0 -I/usr/lib/x86_64-linux-gnu/glib-2.0/include -I/usr/include/sysprof-6 -pthread -I/usr/local/include  -I/usr/include/SDL2 -D_REENTRANT -I/usr/include/x86_64-linux-gnu -I/usr/include/opus  -shared -o lbar_audio.so src/audio.c -lSDL2_mixer -lSDL2 
+cc -O2 -Wall -o lbar-cli tools/lbar-cli.c
+tools/lbar-cli.c: In function ‘main’:
+tools/lbar-cli.c:23:3: warning: ‘strncpy’ output may be truncated copying 107 bytes from a string of length 127 [-Wstringop-truncation]
+   23 |   strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+      |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+luajit lbar.lua config.lua
+[INFO] lbar: x11 connected: 2560x1600 depth=24
+[INFO] lbar: ipc listening: /run/user/1000/lbar.sock
+[lbar] backend: x11
+[INFO] lbar: bar created: 2544x47 pos=top margin=8
+[INFO] lbar: popup created: 460x400 r=16
+[menu] ready
+[INFO] lbar: popup created: 425x470 r=16
+[INFO] lbar: popup created: 340x334 r=16
+[INFO] lbar: popup created: 760x640 r=24
+[keybinds_help] ready: 29 keybinds
+[INFO] lbar: popup created: 520x536 r=16
+[launcher] ready: 2982 entries
+[INFO] lbar: popup created: 560x589 r=16
+[clip_hist] ready: 0 items, backend=xclip
+[INFO] lbar: popup created: 340x355 r=16
+[pomodoro] ready: focus=25min break=5min
+[INFO] lbar: popup created: 920x664 r=16
+[music_player] ready: 6 tracks
+[INFO] lbar: popup created: 360x312 r=16
+[weather] ready (manual=nil)
+[INFO] lbar: popup created: 841x552 r=16
+[sysinfo] ready
+[INFO] lbar: popup created: 840x880 r=16
+[sysmon] ready: 8 cores
+[INFO] lbar: popup created: 420x291 r=16
+[INFO] lbar: popup created: 174x213 r=4
+[color_picker] ready
+[INFO] lbar: popup created: 620x704 r=16
+[ui_demo] ready
+[hide_all] ready
+[move_window] ready: step=30 wm=i3
+[resize_window] ready: step=30 wm=i3
+[lbar] lbar running (x11, 2560x1600, plugins=19)
+[INFO] lbar: popup show
+luajit: lbar.lua:457: 'struct 99' has no member named 'btn'
+stack traceback:
+        lbar.lua:457: in main chunk
+        [C]: at 0x5570ebcf3390
+make: *** [Makefile:12: run] Segmentation fault
+
+2. theme long term persistence when I do toggle on logo menu plugin
+
+
 NOT DONE
 1. TODO wayland: verify all panels/keybinds under sway/hyprland
 2. screenshot on every ui component because one day I guess I need to debug it

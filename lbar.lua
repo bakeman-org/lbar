@@ -454,12 +454,12 @@ while true do
 		if t == 4 then
 				if tgt == 0 then
 					bar.needs_redraw = true
-				elseif ev.btn > 0 then
-					for _, p in pairs(ctx._panels or {}) do
-						if p.id == ev.btn and p.visible then
-							p:draw()
-						end
-					end
+				-- elseif ev.btn > 0 then
+				-- 	for _, p in pairs(ctx._panels or {}) do
+				-- 		if p.id == ev.btn and p.visible then
+				-- 			p:draw()
+				-- 		end
+				-- 	end
 				else
 					local vis = L.lbar_popup_visible(Lctx) ~= 0
 					ctx.popup_visible = vis
