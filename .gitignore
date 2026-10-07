@@ -2,3 +2,4 @@
 compile_commands.json
 lbar.so
 *.so
+lbar-cli

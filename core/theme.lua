@@ -295,9 +295,10 @@ M.legacy_map = {
 
 function M.build(cfg)
 	cfg = cfg or {}
-	local name = cfg.theme or "md3_dark"
+	local light = cfg.theme_mode == "light"
+	local name = light and (cfg.theme_light or "md3_light") or (cfg.theme or "md3_dark")
 	if not M.palettes[name] then
-		name = "md3_dark"
+		name = light and "md3_light" or "md3_dark"
 	end
 	local pal = M.palettes[name]
 	local t = { name = name, dark = pal.dark }
@@ -311,6 +312,11 @@ function M.build(cfg)
 	end
 	for legacy, md3 in pairs(M.legacy_map) do
 		t[legacy] = t[md3]
+	end
+	for k, v in pairs(t) do
+		if type(v) == "number" and v ~= 0 and v < 0xFF000000 then
+			t[k] = v + 0xFF000000
+		end
 	end
 	return t
 end

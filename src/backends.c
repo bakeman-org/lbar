@@ -8,7 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -183,6 +185,7 @@ typedef struct {
   int map_w, map_h;
   int x, y;
   int configured;
+  int flush_pending;
   int busy;
 } lbar_popup_t;
 
@@ -229,6 +232,12 @@ typedef struct lbar_ctx {
   int ptr_target;
   int ptr_x, ptr_y;
   uint32_t ptr_leave_ms;
+
+  int ipc_fd;
+  int ipc_pending;
+  char ipc_cmd[256];
+  char ipc_path[128];
+  int lock_fd;
 } lbar_ctx;
 
 static uint32_t now_ms(void) {
@@ -253,6 +262,92 @@ static void ev_push(lbar_ctx *c, int type, int x, int y, int rx, int ry,
   e->keycode = key;
   e->keystate = ks;
   c->ev_tail = next;
+}
+
+static void ipc_path_of(char *out, size_t n) {
+  const char *rt = getenv("XDG_RUNTIME_DIR");
+  if (!rt || !rt[0])
+    rt = "/tmp";
+  snprintf(out, n, "%s/lbar.sock", rt);
+}
+
+static int instance_lock(lbar_ctx *c) {
+  char path[128];
+  const char *rt = getenv("XDG_RUNTIME_DIR");
+  if (!rt || !rt[0])
+    rt = "/tmp";
+  snprintf(path, sizeof(path), "%s/lbar.lock", rt);
+  int fd = open(path, O_RDWR | O_CREAT, 0600);
+  if (fd < 0)
+    return -1;
+  struct flock fl;
+  memset(&fl, 0, sizeof(fl));
+  fl.l_type = F_WRLCK;
+  fl.l_whence = SEEK_SET;
+  if (fcntl(fd, F_SETLK, &fl) != 0) {
+    LOG_ERROR("another lbar instance is already running (lock %s) — quit it "
+              "first (ctrl+alt+q or pkill lbar)",
+              path);
+    close(fd);
+    return -1;
+  }
+  c->lock_fd = fd;
+  return 0;
+}
+
+static void ipc_init(lbar_ctx *c) {
+  c->ipc_fd = -1;
+  c->ipc_pending = 0;
+  ipc_path_of(c->ipc_path, sizeof(c->ipc_path));
+  unlink(c->ipc_path);
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0)
+    return;
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, c->ipc_path, sizeof(addr.sun_path) - 1);
+  if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+      listen(fd, 4) != 0) {
+    LOG_WARN("ipc bind failed: %s", c->ipc_path);
+    close(fd);
+    return;
+  }
+  int fl = fcntl(fd, F_GETFL, 0);
+  if (fl >= 0)
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+  c->ipc_fd = fd;
+  LOG_INFO("ipc listening: %s", c->ipc_path);
+}
+
+static void ipc_accept(lbar_ctx *c) {
+  for (;;) {
+    int fd = accept(c->ipc_fd, NULL, NULL);
+    if (fd < 0)
+      return;
+    char buf[256];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n > 0) {
+      buf[n] = 0;
+      for (ssize_t i = 0; i < n; i++) {
+        if (buf[i] == '\n' || buf[i] == '\r') {
+          buf[i] = 0;
+          break;
+        }
+      }
+      snprintf(c->ipc_cmd, sizeof(c->ipc_cmd), "%s", buf);
+      c->ipc_pending = 1;
+    }
+  }
+}
+
+int lbar_ipc_take(lbar_ctx *c, char *out, int out_max) {
+  if (!c || !c->ipc_pending || !out || out_max <= 0)
+    return 0;
+  snprintf(out, (size_t)out_max, "%s", c->ipc_cmd);
+  c->ipc_pending = 0;
+  return 1;
 }
 
 static int shm_fd_create(size_t size) {
@@ -331,6 +426,7 @@ static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
   }
   c->ptr_x = wl_fixed_to_int(sx);
   c->ptr_y = wl_fixed_to_int(sy);
+  LOG_INFO("wl ptr enter tgt=%d x=%d y=%d", c->ptr_target, c->ptr_x, c->ptr_y);
   ev_push(c, 1, c->ptr_x, c->ptr_y, 0, 0, 0, c->ptr_target == 2 ? 1 : 0, 0, 0);
 }
 static void ptr_leave(void *data, struct wl_pointer *p, uint32_t serial,
@@ -353,16 +449,35 @@ static void ptr_motion(void *data, struct wl_pointer *p, uint32_t t,
   c->ptr_y = wl_fixed_to_int(sy);
   ev_push(c, 1, c->ptr_x, c->ptr_y, 0, 0, 0, c->ptr_target == 2 ? 1 : 0, 0, 0);
 }
+static int wl_btn_code(uint32_t b) {
+  switch (b) {
+  case 0x110:
+    return 1;
+  case 0x111:
+    return 2;
+  case 0x112:
+    return 3;
+  case 0x113:
+    return 8;
+  case 0x114:
+    return 9;
+  default:
+    return (int)b;
+  }
+}
+
 static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
                        uint32_t t, uint32_t btn, uint32_t state) {
   lbar_ctx *c = data;
   (void)p;
   (void)serial;
   (void)t;
+  LOG_INFO("wl ptr button btn=%u state=%u tgt=%d x=%d y=%d", btn, state,
+           c->ptr_target, c->ptr_x, c->ptr_y);
   if (c->ptr_target == 0)
     return;
   int type = (state == WL_POINTER_BUTTON_STATE_PRESSED) ? 2 : 3;
-  ev_push(c, type, c->ptr_x, c->ptr_y, 0, 0, (int)btn,
+  ev_push(c, type, c->ptr_x, c->ptr_y, 0, 0, wl_btn_code(btn),
           c->ptr_target == 2 ? 1 : 0, 0, 0);
 }
 static void ptr_axis(void *data, struct wl_pointer *p, uint32_t t,
@@ -458,7 +573,8 @@ static void pop_buf_release(void *data, struct wl_buffer *b) {
   lbar_ctx *c = data;
   (void)b;
   for (int i = 0; i < c->n_popups; i++)
-    c->popups[i].busy = 0;
+    if (c->popups[i].buf == b)
+      c->popups[i].busy = 0;
 }
 static const struct wl_buffer_listener pop_buf_listener = {
     .release = pop_buf_release,
@@ -588,7 +704,12 @@ static void pop_configure(void *data, struct zwlr_layer_surface_v1 *ls,
     p->h = nh;
     recreate_pop_buffer(c, p);
   }
+  int first = !p->configured;
   p->configured = 1;
+  if (first && p->flush_pending) {
+    p->flush_pending = 0;
+    ev_push(c, 4, 0, 0, 0, 0, (int)(p - c->popups), 1, 0, 0);
+  }
 }
 static void pop_closed(void *data, struct zwlr_layer_surface_v1 *ls) {
   (void)data;
@@ -915,6 +1036,12 @@ lbar_ctx *lbar_open(void) {
   lbar_ctx *c = calloc(1, sizeof(*c));
   if (!c)
     return NULL;
+  c->ipc_fd = -1;
+  c->lock_fd = -1;
+  if (instance_lock(c) != 0) {
+    free(c);
+    return NULL;
+  }
 
   if (getenv("WAYLAND_DISPLAY") && getenv("WAYLAND_DISPLAY")[0]) {
     c->is_wayland = 1;
@@ -931,6 +1058,7 @@ lbar_ctx *lbar_open(void) {
         LOG_WARN("cannot measure screen, assuming %dx%d", c->screen_w,
                  c->screen_h);
       }
+      ipc_init(c);
       return c;
     }
     LOG_WARN("wayland backend failed, falling back to X11");
@@ -944,6 +1072,7 @@ lbar_ctx *lbar_open(void) {
     free(c);
     return NULL;
   }
+  ipc_init(c);
   return c;
 }
 
@@ -992,6 +1121,10 @@ static void x_flush_pixels(lbar_ctx *c, Window win, GC gc,
 
 void lbar_bar_flush(lbar_ctx *c, const uint32_t *pixels) {
   if (c->is_wayland) {
+    if (!c->bar_configured)
+      return;
+    wl_display_dispatch_pending(c->wl_dpy);
+    wl_display_roundtrip(c->wl_dpy);
     if (c->bar_map_w != c->bar_w || c->bar_map_h != c->bar_h) {
       if (recreate_bar_buffer(c) < 0)
         return;
@@ -1192,6 +1325,16 @@ void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels) {
   if (c->is_wayland) {
     if (!p->visible)
       return;
+    if (!p->configured) {
+      p->flush_pending = 1;
+      return;
+    }
+    wl_display_dispatch_pending(c->wl_dpy);
+    wl_display_roundtrip(c->wl_dpy);
+    if (!p->configured) {
+      p->flush_pending = 1;
+      return;
+    }
     if (p->map_w != p->w || p->map_h != p->h) {
       if (recreate_pop_buffer(c, p) < 0)
         return;
@@ -1328,20 +1471,43 @@ static void drain_x11_events(lbar_ctx *c) {
 }
 
 int lbar_poll(lbar_ctx *c, int timeout_ms) {
+  struct pollfd fds[2];
+  int nfds = 0;
+  int backend_fd = -1;
   if (c->is_wayland) {
     wl_display_dispatch_pending(c->wl_dpy);
     wl_display_flush(c->wl_dpy);
-    struct pollfd pfd = {wl_display_get_fd(c->wl_dpy), POLLIN, 0};
-    if (poll(&pfd, 1, timeout_ms) > 0) {
-      wl_display_dispatch(c->wl_dpy);
-      wl_display_dispatch_pending(c->wl_dpy);
+    backend_fd = wl_display_get_fd(c->wl_dpy);
+  } else {
+    backend_fd = ConnectionNumber(c->x_dpy);
+  }
+  if (backend_fd >= 0) {
+    fds[nfds].fd = backend_fd;
+    fds[nfds].events = POLLIN;
+    nfds++;
+  }
+  if (c->ipc_fd >= 0) {
+    fds[nfds].fd = c->ipc_fd;
+    fds[nfds].events = POLLIN;
+    nfds++;
+  }
+  if (nfds > 0 && poll(fds, nfds, timeout_ms) > 0) {
+    for (int i = 0; i < nfds; i++) {
+      if (!(fds[i].revents & POLLIN))
+        continue;
+      if (fds[i].fd == c->ipc_fd) {
+        ipc_accept(c);
+      } else if (c->is_wayland) {
+        wl_display_dispatch(c->wl_dpy);
+        wl_display_dispatch_pending(c->wl_dpy);
+      }
     }
+  }
+  if (c->ipc_fd >= 0 && c->ipc_fd != backend_fd)
+    ipc_accept(c);
+  if (c->is_wayland) {
     wl_display_flush(c->wl_dpy);
   } else {
-    if (timeout_ms > 0) {
-      struct pollfd pfd = {ConnectionNumber(c->x_dpy), POLLIN, 0};
-      poll(&pfd, 1, timeout_ms);
-    }
     drain_x11_events(c);
   }
   return 0;
@@ -1358,6 +1524,16 @@ int lbar_next_event(lbar_ctx *c, lbar_ev_t *out) {
 void lbar_close(lbar_ctx *c) {
   if (!c)
     return;
+  if (c->ipc_fd >= 0) {
+    close(c->ipc_fd);
+    c->ipc_fd = -1;
+  }
+  if (c->ipc_path[0])
+    unlink(c->ipc_path);
+  if (c->lock_fd >= 0) {
+    close(c->lock_fd);
+    c->lock_fd = -1;
+  }
   if (c->is_wayland) {
     for (int i = 0; i < c->n_popups; i++) {
       lbar_popup_t *p = &c->popups[i];

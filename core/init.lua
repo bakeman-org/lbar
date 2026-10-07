@@ -43,6 +43,7 @@ return function(SCRIPT_DIR)
     int  lbar_x_get_region(lbar_ctx *c, int x, int y, int w, int h,
                            unsigned char *out, int out_max);
     int64_t lbar_key_lookup(lbar_ctx *c, int keycode, int state, char *out, int out_max);
+    int lbar_ipc_take(lbar_ctx *c, char *out, int out_max);
 
     int  lbar_poll(lbar_ctx *c, int timeout_ms);
     int  lbar_next_event(lbar_ctx *c, lbar_event_t *out);

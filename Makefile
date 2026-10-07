@@ -6,10 +6,13 @@ CFLAGS  := -O2 -fPIC -Wall -Wextra -Wno-unused-parameter \
 LDFLAGS := -shared
 LIBS    := $(shell pkg-config --libs $(PKGS))
 
-all: lbar.so lbar_audio.so
+all: lbar.so lbar_audio.so lbar-cli
 
-run: lbar.so lbar_audio.so
+run: lbar.so lbar_audio.so lbar-cli
 	luajit lbar.lua config.lua
+
+lbar-cli: tools/lbar-cli.c
+	$(CC) -O2 -Wall -o $@ $<
 
 lbar.so: src/text.c src/backends.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
@@ -21,7 +24,7 @@ lbar_audio.so: src/audio.c
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) $(LDFLAGS) -o $@ $< $(SDL_LIBS)
 
 clean:
-	rm -f lbar.so lbar_audio.so
+	rm -f lbar.so lbar_audio.so lbar-cli
 
 .PHONY: all clean
 

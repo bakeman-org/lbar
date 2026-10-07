@@ -150,7 +150,7 @@ function Toast:show(text, opts)
 	self.text = prepared
 	self.style = style
 	self.w, self.h = bw, bh
-	self.deadline = opts.duration or DEFAULT_DURATION
+	self.deadline = self.ctx.debug and math.huge or (opts.duration or DEFAULT_DURATION)
 	self.anchor = opts.anchor
 
 	local tx, ty

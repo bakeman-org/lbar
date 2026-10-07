@@ -9,8 +9,9 @@ return {
     -- builtin themes: md3_dark md3_light one_dark one_light gruvbox_dark gruvbox_light
     -- nord catppuccin_mocha catppuccin_latte tokyo_night tokyo_night_day
     -- solarized_dark solarized_light
-    theme       = 'one_dark',
-    theme_light = 'one_light',
+    theme       = 'tokyo_night',
+    theme_light = 'tokyo_night_day',
+    theme_mode  = 'dark',
 
     font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
     font_size = 24,
@@ -71,6 +72,10 @@ return {
           group = 'system', desc = 'toggle dark / light theme' },
         { mod = 'ctrl+alt+shift', key = 's', action = 'debug_dump_panel',
           group = 'system', desc = 'dump visible panel screenshot to /tmp' },
+        { mod = 'ctrl+alt+shift', key = 'd', action = 'toggle_debug_mode',
+          group = 'system', desc = 'debug mode: toasts stay on screen' },
+        { mod = 'ctrl+alt+shift', key = 'x', action = 'debug_screenshot',
+          group = 'system', desc = 'full screen shot (panel/toast tagged) to ~/Pictures/lbar' },
 
         { mod = 'ctrl+alt', key = 'd', action = 'hide_all_windows',
           group = 'windows', desc = 'hide / restore all panels' },

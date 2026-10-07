@@ -1,3 +1,7 @@
+NOT DONE
+1. TODO wayland: verify all panels/keybinds under sway/hyprland
+2. screenshot on every ui component because one day I guess I need to debug it
+
 TODO
 1. DONE popup UI garbage fixed (xpet-proven XImage flush path: img data calloc + bytes_per_line row copy)
 2. DONE panel (popup) reworked to xpet panel system, wayland path fixed (margin commit on move/show, flush guard, re-show after hide)
@@ -12,7 +16,7 @@ TODO
 11. DONE panel live_resize/move_to/move_by, ptr grab + screen sampling for color pick (X11)
 12. DONE LBAR_POPUP_MAX 16, Escape closes sticky panels, scroll routing
 13. DONE music_player: bogus duration on probe-failure tracks (clamped d < 3600)
-14. TODO wayland: verify all panels/keybinds under sway/hyprland
+14. PARTIAL wayland: FIXED bar/popup clicks — wl_pointer.button passed raw linux codes (BTN_LEFT=0x110) so all Lua btn==1 checks failed on hyprland; now mapped to X11-style 1/2/3/8/9. FIXED global keybinds — unix IPC socket ($XDG_RUNTIME_DIR/lbar.sock) + lbar-cli tool + auto-registered compositor binds on start (hyprctl keyword bind / swaymsg bindsym); commands dispatch through the main loop (spaces -> underscores, e.g. "toggle launcher"). wl ptr enter/button logged for debugging. Still X11-only: popup keyboard (wl_keyboard/text input), verified panels on real sway/hyprland session still pending
 15. DONE bar items for all panel plugins (apps/clip/pomo/music/wttr/info/mon/pick/ui/keys), anchored toggle via Util.toggle_from_bar
 16. DONE panel auto-fit: refit on every show + model_fn rebuilds layout from current line height
 17. DONE bar gap compression when items exceed width at large fonts; pomodoro/keybinds panel size caps scale with line height
@@ -37,3 +41,9 @@ TODO
 36. DONE clip_hist redo: standard header with keybind hint; clear moved to footer bar (N / M count left, tonal clear button right)
 37. DONE color_picker rewritten: frozen full-screen capture on pick start (X11 one-shot XGetImage via lbar_x_get_region, wayland via grim PPM), magnifier + crosshair + click pick read from the frozen buffer (no more live-sampling white #FFFFFF bug); arrows move cursor (8px, shift = 1px), Enter picks, Esc/right-click cancels; works on x11 + wayland
 38. DONE ui_demo tabs (controls / lists / inventory): new draggable ui:scrollbar widget demo, widget inventory, panel list with keybinds
+39. DONE debug mode toggle (ctrl+alt+shift+d): ctx.debug pins toasts on screen (no auto-dismiss) so they can be screenshotted; toggling off hides the pinned toast
+40. DONE generic debug screenshot tool core/screenshot.lua (ctrl+alt+shift+x): full-screen capture named after visible panel/toast/screen, saved to config.debug_shot_dir (default ~/Pictures/lbar) as BMP (x11, native XGetImage root) or PNG (wayland, grim); best-effort clipboard copy (xclip+convert / wl-copy) inspired by user's screenshot shell script
+41. DONE lbar-cli IPC: `lbar-cli toggle launcher` (or any action, spaces = underscores) tells running lbar to execute it; hyprland keybinds auto-registered at lbar start via hyprctl eval hl.bind("CTRL + ALT + h", hl.dsp.exec_cmd("lbar-cli <action>")) — hyprctl keyword bind is DEAD in Hyprland 0.56 (non-legacy parsers); unbind-first prevents duplicate triggers on re-register; sway still uses swaymsg bindsym
+42. DONE wayland transparency fix: theme colors were 24-bit (alpha=0) — X11 ignores alpha but wl ARGB8888 buffers composite it, so all fills were see-through ("theme broken"); M.build now ORs 0xFF000000 into every color token (0 stays transparent for rounded corners)
+43. DONE wayland protocol-crash guard: "layerSurface was not configured, but a buffer was attached" — flushes check configured before attach AND run wl_display_dispatch_pending + wl_display_roundtrip before every attach so compositor-initiated configure events (rapid double-click layer churn) are always acked first; pending popup flush defers and pop_configure re-triggers the exact panel redraw via expose event (ev.btn = popup id); pop_buf_release matches the released buffer; instance lock ($XDG_RUNTIME_DIR/lbar.lock) refuses a second lbar so stale old-binary processes can't linger
+44. DONE theme mode persistence: config.theme_mode = 'dark'|'light' selects theme/theme_light palette in Theme.build; ctrl+alt+k toggle rewrites theme_mode into config.lua (in-place gsub, insert after theme_light, or append) — restart/hot-reload restores last used mode instead of always dark

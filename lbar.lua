@@ -11,6 +11,7 @@ local Bar = require("core.bar")
 local PluginMgr = require("core.plugins")
 local Keybinds = require("core.keybinds")
 local Toast = require("core.toast")
+local Screenshot = require("core.screenshot")
 local Theme = require("core.theme")
 local Util = require("core.util")
 local ffi = init.ffi
@@ -81,6 +82,8 @@ local ctx = {
 	popup_visible = false,
 	active_plugin_name = nil,
 	active_panel = nil,
+	debug = false,
+	lbar_dir = SCRIPT_DIR,
 }
 ctx.scr_w = L.lbar_screen_w(Lctx)
 ctx.scr_h = L.lbar_screen_h(Lctx)
@@ -211,7 +214,7 @@ end
 local wpaths = watch_paths(config)
 local wmtimes = PluginMgr.snapshot_mtimes(wpaths)
 local auto_reload = true
-local theme_dark = true
+local theme_dark = (config.theme_mode or "dark") ~= "light"
 
 local function reload_all()
 	local ok, newcfg = pcall(dofile, CONFIG_PATH)
@@ -240,7 +243,7 @@ local function reload_all()
 	config = newcfg
 	ctx.config = config
 	ctx.theme = Theme.build(config)
-	theme_dark = true
+	theme_dark = (config.theme_mode or "dark") ~= "light"
 
 	if font_changed then
 		local ok_f, nf = pcall(load_font, config)
@@ -283,10 +286,38 @@ actions.hide_all_windows = function()
 	ctx.close_panels()
 end
 
+local function save_theme_mode(mode)
+	local fh = io.open(CONFIG_PATH, "r")
+	if not fh then
+		log("save theme_mode failed: cannot read %s", CONFIG_PATH)
+		return
+	end
+	local text = fh:read("*a")
+	fh:close()
+	if text:find("theme_mode%s*=") then
+		text = text:gsub("theme_mode%s*=%s*['\"][%w_]+['\"]", "theme_mode = '" .. mode .. "'")
+	else
+		local repl = "%1    theme_mode = '" .. mode .. "',\n"
+		local new = text:gsub("(theme_light%s*=%s*['\"][^'\"]*['\"],%s*\n)", repl)
+		if new == text then
+			new = text .. "\ntheme_mode = '" .. mode .. "',\n"
+		end
+		text = new
+	end
+	local out = io.open(CONFIG_PATH, "w")
+	if not out then
+		log("save theme_mode failed: cannot write %s", CONFIG_PATH)
+		return
+	end
+	out:write(text)
+	out:close()
+	log("theme_mode saved: %s", mode)
+end
+
 actions.toggle_theme = function()
 	theme_dark = not theme_dark
-	local name = theme_dark and (config.theme or "md3_dark") or (config.theme_light or "md3_light")
-	ctx.theme = Theme.build({ theme = name })
+	config.theme_mode = theme_dark and "dark" or "light"
+	ctx.theme = Theme.build(config)
 	for _, p in pairs(panels) do
 		p.bg = ctx.theme.bg
 	end
@@ -301,7 +332,41 @@ actions.toggle_theme = function()
 			p:draw()
 		end
 	end
-	ctx.notify("theme: " .. name, { style = "info" })
+	ctx.notify("theme: " .. ctx.theme.name, { style = "info" })
+end
+
+actions.toggle_debug_mode = function()
+	ctx.debug = not ctx.debug
+	if ctx.debug then
+		ctx.notify("debug on — toasts stay, ctrl+alt+shift+x to screenshot", { style = "info" })
+	else
+		ctx.toast:hide()
+		ctx.notify("debug off", { style = "info" })
+	end
+end
+
+actions.debug_screenshot = function()
+	local tag = "screen"
+	local p = ctx.active_panel
+	if not (p and p.visible) then
+		for _, q in pairs(panels) do
+			if q.visible then
+				p = q
+				break
+			end
+		end
+	end
+	if p and p.visible then
+		tag = p.name
+	elseif ctx.toast and ctx.toast.visible then
+		tag = "toast"
+	end
+	local path, err = Screenshot.capture(ctx, tag)
+	if path then
+		ctx.notify("saved " .. path, { style = "success", duration = 5000 })
+	else
+		ctx.notify("screenshot failed: " .. tostring(err), { style = "error" })
+	end
 end
 
 actions.debug_dump_panel = function()
@@ -358,22 +423,50 @@ end
 
 log("lbar running (%s, %dx%d, plugins=%d)", kind, ctx.scr_w, ctx.scr_h, #bar.plugins)
 
+local ipcbuf = ffi.new("char[256]")
+
+local function dispatch_ipc()
+	if L.lbar_ipc_take(Lctx, ipcbuf, 256) == 0 then
+		return
+	end
+	local cmd = ffi.string(ipcbuf):gsub("^%s+", ""):gsub("%s+$", "")
+	if cmd == "" then
+		return
+	end
+	local action = cmd:gsub("%s+", "_")
+	if actions[action] then
+		local ok, aerr = pcall(actions[action])
+		if not ok then
+			log("ipc action %s error: %s", action, tostring(aerr))
+		end
+	else
+		log("ipc unknown action: %s", cmd)
+	end
+end
+
 while true do
 	L.lbar_poll(Lctx, 16)
+	dispatch_ipc()
 
 	while L.lbar_next_event(Lctx, ev) ~= 0 do
 		local t = ev.type
 		local tgt = ev.target
 		if t == 4 then
-			if tgt == 0 then
-				bar.needs_redraw = true
-			else
-				local vis = L.lbar_popup_visible(Lctx) ~= 0
-				ctx.popup_visible = vis
-				if vis then
-					if ctx.active_panel then
-						ctx.active_panel:draw()
+				if tgt == 0 then
+					bar.needs_redraw = true
+				elseif ev.btn > 0 then
+					for _, p in pairs(ctx._panels or {}) do
+						if p.id == ev.btn and p.visible then
+							p:draw()
+						end
 					end
+				else
+					local vis = L.lbar_popup_visible(Lctx) ~= 0
+					ctx.popup_visible = vis
+					if vis then
+						if ctx.active_panel then
+							ctx.active_panel:draw()
+						end
 				else
 					for _, p in pairs(panels) do
 						p.visible = false
