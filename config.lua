@@ -1,5 +1,5 @@
 return {
-    position = 'bottom',          -- 'top' | 'bottom'
+    position = 'top',          -- 'top' | 'bottom'
     height   = 32,
     padding  = 12,
     gap      = 6,

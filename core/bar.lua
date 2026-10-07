@@ -147,6 +147,8 @@ function Bar:on_click(btn, mx, my)
 		if not ok then
 			self.ctx.log("plugin %s on_click: %s", p.name, tostring(err))
 		end
+	elseif self.ctx.popup_visible then
+		self.ctx.close_popup()
 	end
 end
 

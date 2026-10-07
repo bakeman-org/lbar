@@ -1,4 +1,4 @@
-1. ewmh slops for x11 for bar position, because it still cover other window on x11
-
-2. the popup window only works on x11 and cause ui blocking when I click clock, not work on wayland backend
-
+TODO
+1. clock plugin popup why the ui on x11 is kind of mess see screenshot
+2. the popup window still only works on x11 I click clock, not work on wayland backend
+3. if any code change do full code on change, no hide as ...

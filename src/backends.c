@@ -704,19 +704,24 @@ static void wl_popup_set_position(lbar_ctx *c, int x, int y) {
 }
 static void wl_popup_show(lbar_ctx *c) {
   c->pop_visible = 1;
+  /* 允许重新 attach buffer；否则 hide 之后 buffer 永远刷不上去 */
+  c->pop_busy = 0;
   if (c->pop_surf)
     wl_surface_commit(c->pop_surf);
+  wl_display_flush(c->wl_dpy);
   LOG_INFO("popup show at (%d,%d)", c->pop_x, c->pop_y);
 }
+
 static void wl_popup_hide(lbar_ctx *c) {
   c->pop_visible = 0;
   if (c->pop_surf) {
     wl_surface_attach(c->pop_surf, NULL, 0, 0);
     wl_surface_commit(c->pop_surf);
   }
+  c->pop_busy = 0; /* 关键：让下次 flush 能重新 attach */
+  wl_display_flush(c->wl_dpy);
   LOG_INFO("popup hide");
 }
-
 /* ===================================================================
    X11
    =================================================================== */
@@ -748,21 +753,32 @@ static int x_create_bar(lbar_ctx *c, int h, int pos) {
   int y = (pos == 0) ? 0 : (c->screen_h - h);
   XSetWindowAttributes a;
   memset(&a, 0, sizeof(a));
-  a.override_redirect = 1;
+  /* 不再使用 override_redirect：必须让 WM 接管，strut 才会被处理 */
+  a.override_redirect = 0;
   a.background_pixel = 0x1c1c1e;
   a.border_pixel = 0x1c1c1e;
-  unsigned long mask = CWOverrideRedirect | CWBackPixel | CWBorderPixel;
+  unsigned long mask = CWBackPixel | CWBorderPixel;
 
   c->x_bar_win =
       XCreateWindow(c->x_dpy, c->x_root, 0, y, c->screen_w, h, 0, c->x_depth,
                     InputOutput, CopyFromParent, mask, &a);
+
   long evmask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
                 PointerMotionMask | EnterWindowMask | LeaveWindowMask;
   XSelectInput(c->x_dpy, c->x_bar_win, evmask);
   c->x_bar_gc = XCreateGC(c->x_dpy, c->x_bar_win, 0, NULL);
-  XMapWindow(c->x_dpy, c->x_bar_win);
-  XRaiseWindow(c->x_dpy, c->x_bar_win);
 
+  /* 告诉 WM 我们想要的位置和尺寸，避免它重新摆放 */
+  XSizeHints hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.flags = PPosition | PSize;
+  hints.x = 0;
+  hints.y = y;
+  hints.width = c->screen_w;
+  hints.height = h;
+  XSetWMNormalHints(c->x_dpy, c->x_bar_win, &hints);
+
+  /* ---- EWMH 属性：必须在 XMapWindow 之前设置 ---- */
   Atom type = XInternAtom(c->x_dpy, "_NET_WM_WINDOW_TYPE", 0);
   Atom dock = XInternAtom(c->x_dpy, "_NET_WM_WINDOW_TYPE_DOCK", 0);
   XChangeProperty(c->x_dpy, c->x_bar_win, type, XA_ATOM, 32, PropModeReplace,
@@ -773,6 +789,16 @@ static int x_create_bar(lbar_ctx *c, int h, int pos) {
   XChangeProperty(c->x_dpy, c->x_bar_win, desktop, XA_CARDINAL, 32,
                   PropModeReplace, (unsigned char *)&all, 1);
 
+  Atom state = XInternAtom(c->x_dpy, "_NET_WM_STATE", 0);
+  Atom above = XInternAtom(c->x_dpy, "_NET_WM_STATE_ABOVE", 0);
+  Atom sticky = XInternAtom(c->x_dpy, "_NET_WM_STATE_STICKY", 0);
+  Atom skip_taskbar = XInternAtom(c->x_dpy, "_NET_WM_STATE_SKIP_TASKBAR", 0);
+  Atom skip_pager = XInternAtom(c->x_dpy, "_NET_WM_STATE_SKIP_PAGER", 0);
+  Atom states[4] = {above, sticky, skip_taskbar, skip_pager};
+  XChangeProperty(c->x_dpy, c->x_bar_win, state, XA_ATOM, 32, PropModeReplace,
+                  (unsigned char *)states, 4);
+
+  /* ---- strut：保留原有逻辑 ---- */
   Atom strut = XInternAtom(c->x_dpy, "_NET_WM_STRUT_PARTIAL", 0);
   unsigned long s[12] = {0};
   if (pos == 0) {
@@ -796,7 +822,9 @@ static int x_create_bar(lbar_ctx *c, int h, int pos) {
   XChangeProperty(c->x_dpy, c->x_bar_win, strut4, XA_CARDINAL, 32,
                   PropModeReplace, (unsigned char *)s4, 4);
 
+  XMapWindow(c->x_dpy, c->x_bar_win);
   XFlush(c->x_dpy);
+
   c->bar_w = c->screen_w;
   c->bar_h = h;
   LOG_INFO("bar created: %dx%d pos=%s", c->bar_w, c->bar_h,
@@ -859,17 +887,15 @@ static void x_popup_show(lbar_ctx *c) {
     XRaiseWindow(c->x_dpy, c->x_popup_win);
     XFlush(c->x_dpy);
     c->x_popup_visible = 1;
-    XGrabPointer(c->x_dpy, c->x_popup_win, 0,
-                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
-                 GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+    /* 不再 XGrabPointer：抓取会让整个 X 会话失去响应 */
     LOG_INFO("popup show");
   }
 }
+
 static void x_popup_hide(lbar_ctx *c) {
   if (!c->x_popup_visible)
     return;
   c->x_popup_visible = 0;
-  XUngrabPointer(c->x_dpy, CurrentTime);
   XUnmapWindow(c->x_dpy, c->x_popup_win);
   XFlush(c->x_dpy);
   LOG_INFO("popup hide");
@@ -1027,10 +1053,6 @@ static void drain_x11_events(lbar_ctx *c) {
               e.xmotion.y_root, 0, tgt);
     } else if (e.type == ButtonPress) {
       int tgt = (e.xbutton.window == c->x_popup_win) ? 1 : 0;
-      if (c->x_popup_visible && tgt == 0) {
-        x_popup_hide(c);
-        ev_push(c, 4, 0, 0, 0, 0, 0, 1);
-      }
       ev_push(c, 2, e.xbutton.x, e.xbutton.y, e.xbutton.x_root,
               e.xbutton.y_root, e.xbutton.button, tgt);
     } else if (e.type == ButtonRelease) {
@@ -1043,12 +1065,7 @@ static void drain_x11_events(lbar_ctx *c) {
 
 int lbar_poll(lbar_ctx *c, int timeout_ms) {
   if (c->is_wayland) {
-    if (c->pop_visible && c->ptr_target == 0 && c->ptr_leave_ms &&
-        (now_ms() - c->ptr_leave_ms) > 300) {
-      wl_popup_hide(c);
-      ev_push(c, 4, 0, 0, 0, 0, 0, 1);
-      c->ptr_leave_ms = 0;
-    }
+    /* 删除 pop_visible && ptr_target==0 && leave_ms>300 的自动隐藏分支 */
     wl_display_dispatch_pending(c->wl_dpy);
     wl_display_flush(c->wl_dpy);
     struct pollfd pfd = {wl_display_get_fd(c->wl_dpy), POLLIN, 0};
