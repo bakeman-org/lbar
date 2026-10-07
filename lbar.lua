@@ -304,6 +304,28 @@ actions.toggle_theme = function()
 	ctx.notify("theme: " .. name, { style = "info" })
 end
 
+actions.debug_dump_panel = function()
+	local p = ctx.active_panel
+	if not (p and p.visible) then
+		for _, q in pairs(panels) do
+			if q.visible then
+				p = q
+				break
+			end
+		end
+	end
+	if not (p and p.visible) then
+		ctx.notify("no visible panel", { style = "warn" })
+		return
+	end
+	local path = string.format("/tmp/lbar_%s.bmp", p.name)
+	if p:dump_bmp(path) then
+		ctx.notify("saved " .. path, { style = "info" })
+	else
+		ctx.notify("panel dump failed", { style = "crit" })
+	end
+end
+
 keybinds.build(config.keybinds)
 
 ffi.cdef([[

@@ -69,14 +69,15 @@ local function build_model(ctx, user_size)
 		APPBAR = lh + 26,
 		SEARCH_H = lh + 20,
 		ROW_H = lh + 22,
+		FOOTER_H = lh + 22,
 		VROWS = 8,
 	}
 	if user_size then
 		m.W = math.max(400, user_size.w)
-		local used = m.APPBAR + 14 + m.SEARCH_H + 12 + 14
+		local used = m.APPBAR + 14 + m.SEARCH_H + 12 + m.FOOTER_H + 12
 		m.VROWS = math.max(3, math.floor((user_size.h - used) / m.ROW_H))
 	end
-	m.H = m.APPBAR + 14 + m.SEARCH_H + 12 + m.VROWS * m.ROW_H + 14
+	m.H = m.APPBAR + 14 + m.SEARCH_H + 12 + m.VROWS * m.ROW_H + m.FOOTER_H
 	return m
 end
 
@@ -91,32 +92,18 @@ local function do_draw(p)
 		return select(1, ctx.get_text_size(str))
 	end
 
-	local ay = p:draw_header(L_TITLE, nil, 24)
-
-	local r = p.rect_close
-	local clear_w = 64
-	local clear_x = r.x - 12 - clear_w
-	local clear_y = math.floor((m.APPBAR - (28)) / 2) + 1
-	if ui:id_button("clip_clear", clear_x, clear_y, clear_w, 26, L_CLEAR, { tonal = true }) then
-		M.clear_all()
-	end
-
-	local hw = tw(M.hint)
-	local hint_right = clear_x - 12
-	local hint_x = hint_right - hw
-	local min_x = 24 + tw(L_TITLE) + 12
-	if hint_x >= min_x then
-		p:text(hint_x, ay, M.hint, T.hint)
-	end
+	p:draw_header(L_TITLE, M.hint, 24)
 
 	local sy = m.APPBAR + 14
 	p.input:set_rect(24, sy, W - 48, m.SEARCH_H)
 	p.input:draw(p)
 
 	local list_y = sy + m.SEARCH_H + 12
+	local list_h = m.VROWS * m.ROW_H
+	local footer_y = list_y + list_h
 	local n = #M.filtered
 
-	p:rect(0, list_y, W, m.VROWS * m.ROW_H, T.bg)
+	p:rect(0, list_y, W, list_h, T.bg)
 
 	local row_text_x = 44
 	local time_pad_r = 24
@@ -144,7 +131,7 @@ local function do_draw(p)
 			local tsw = tw(tstr)
 			p:text(W - time_pad_r - tsw, ty, tstr, T.hint)
 
-			if li < n then
+			if li < n and i < m.VROWS then
 				p:rect(24, ry + m.ROW_H - 1, W - 48, 1, T.outline)
 			end
 
@@ -158,6 +145,18 @@ local function do_draw(p)
 		local empty = M.query ~= "" and L_NO_MATCH or L_EMPTY
 		local ew = tw(empty)
 		p:text(math.floor(W / 2 - ew / 2), list_y + math.floor(m.ROW_H * 0.6), empty, T.hint)
+	end
+
+	p:rect(0, footer_y, W, m.FOOTER_H, T.surface)
+	p:rect(0, footer_y, W, 1, T.outline)
+	local by = footer_y + math.floor((m.FOOTER_H - lh) / 2)
+	local cnt = string.format("%d / %d", n, #M.history)
+	p:text(24, by, cnt, T.hint)
+	local bw = 84
+	local bh = lh + 10
+	local byy = footer_y + math.floor((m.FOOTER_H - bh) / 2)
+	if ui:id_button("clip_clear", W - 24 - bw, byy, bw, bh, L_CLEAR, { tonal = true }) then
+		M.clear_all()
 	end
 end
 

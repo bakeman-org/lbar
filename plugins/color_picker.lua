@@ -1,4 +1,5 @@
 local M = {}
+local ffi = require("ffi")
 local Panel = require("core.panel")
 local Clipboard = require("core.clipboard")
 local Util = require("core.util")
@@ -8,7 +9,16 @@ local log = Util.logger("color_picker")
 local ZOOM = 10
 local GRID = 15
 local PAD = 12
+local STEP = 8
+local GAP = 24
+
 local XK_ESCAPE = 0xff1b
+local XK_LEFT = 0xff51
+local XK_UP = 0xff52
+local XK_RIGHT = 0xff53
+local XK_DOWN = 0xff54
+local XK_RETURN = 0xff0d
+local XK_KP_ENTER = 0xff8d
 
 local function hex_of(c)
 	return string.format("#%02X%02X%02X", c.r, c.g, c.b)
@@ -33,21 +43,141 @@ local function build_model(ctx, user_size)
 	return m
 end
 
-local function in_rect(mx, my, r)
-	return mx >= r.x and mx < r.x + r.w and my >= r.y and my < r.y + r.h
+local function pixel_at(x, y)
+	local s = M.screen
+	if not s or x < 0 or y < 0 or x >= s.w or y >= s.h then
+		return nil
+	end
+	local i = (y * s.w + x) * 3
+	return s.buf[i], s.buf[i + 1], s.buf[i + 2]
+end
+
+local function color_at(x, y)
+	local r, g, b = pixel_at(x, y)
+	if not r then
+		return nil
+	end
+	return { r = r, g = g, b = b }
+end
+
+local function capture_x11(ctx)
+	local w, h = ctx.scr_w, ctx.scr_h
+	local buf = ffi.new("unsigned char[?]", w * h * 3)
+	local rc = ctx.L.lbar_x_get_region(ctx.Lctx, 0, 0, w, h, buf, w * h * 3)
+	if rc ~= 0 then
+		return nil
+	end
+	return { w = w, h = h, buf = buf }
+end
+
+local function capture_wayland(ctx)
+	local w, h = ctx.scr_w, ctx.scr_h
+	local p = io.popen(string.format("grim -g '0,0 %dx%d' - 2>/dev/null", w, h))
+	if not p then
+		return nil
+	end
+	local data = p:read("*a")
+	p:close()
+	if not data or #data < 16 then
+		return nil
+	end
+	local pos = 1
+	if data:sub(1, 2) ~= "P6" then
+		return nil
+	end
+	pos = 3
+	local vals = {}
+	for i = 1, 3 do
+		while pos <= #data do
+			local b = data:byte(pos)
+			if b == 35 then
+				while pos <= #data and data:byte(pos) ~= 10 do
+					pos = pos + 1
+				end
+			elseif b == 10 or b == 13 or b == 32 or b == 9 then
+				pos = pos + 1
+			else
+				break
+			end
+		end
+		local v = 0
+		local started = false
+		while pos <= #data do
+			local b = data:byte(pos)
+			if b < 48 or b > 57 then
+				break
+			end
+			v = v * 10 + (b - 48)
+			started = true
+			pos = pos + 1
+		end
+		if not started then
+			return nil
+		end
+		vals[i] = v
+	end
+	pos = pos + 1
+	local sw, sh = vals[1], vals[2]
+	local need = sw * sh * 3
+	if sw <= 0 or sh <= 0 or #data - pos + 1 < need then
+		return nil
+	end
+	local buf = ffi.new("unsigned char[?]", need)
+	ffi.copy(buf, data:sub(pos, pos + need - 1))
+	return { w = sw, h = sh, buf = buf }
+end
+
+local function start_pick()
+	local ctx = M.ctx
+	for _, pn in pairs(ctx._panels or {}) do
+		if pn ~= M.mag and pn.visible then
+			pn:hide(true)
+		end
+	end
+	local scr = ctx.backend_kind == "x11" and capture_x11(ctx) or capture_wayland(ctx)
+	if not scr then
+		ctx.notify(ctx.backend_kind == "x11" and "screen capture failed"
+			or "screen capture failed (install grim)", { style = "error" })
+		return
+	end
+	M.screen = scr
+	M.picking = true
+	M.cx = math.floor(ctx.scr_w / 2)
+	M.cy = math.floor(ctx.scr_h / 2)
+	M.color = color_at(M.cx, M.cy)
+	M.mag:show_xy(math.floor((ctx.scr_w - M.mag.w) / 2), math.floor((ctx.scr_h - M.mag.h) / 2))
+	ctx.active_panel = M.mag
+	ctx.L.lbar_ptr_grab(ctx.Lctx, M.mag.id)
+	ctx.L.lbar_kbd_grab(ctx.Lctx, M.mag.id)
+end
+
+local function place_mag(p)
+	local ctx = M.ctx
+	local nx, ny = M.cx + GAP, M.cy + GAP
+	if nx + p.w > ctx.scr_w then
+		nx = M.cx - p.w - GAP
+	end
+	if ny + p.h > ctx.scr_h then
+		ny = M.cy - p.h - GAP
+	end
+	if nx < 0 then
+		nx = 0
+	end
+	if ny < 0 then
+		ny = 0
+	end
+	p:move_to(nx, ny)
 end
 
 local function draw_mag(p)
 	local ctx = p.ctx
 	local half = math.floor(GRID / 2)
 	p:clear(0x000000)
-	if M.ok then
-		for gy = 0, GRID - 1 do
-			for gx = 0, GRID - 1 do
-				local i = (gy * GRID + gx) * 3
-				local col = M.buf[i] * 0x10000 + M.buf[i + 1] * 0x100 + M.buf[i + 2]
-				p:rect(PAD + gx * ZOOM, PAD + gy * ZOOM, ZOOM, ZOOM, col)
-			end
+	for gy = 0, GRID - 1 do
+		for gx = 0, GRID - 1 do
+			local r, g, b = pixel_at(M.cx - half + gx, M.cy - half + gy)
+			local col = r and (r * 0x10000 + g * 0x100 + b) or 0x000000
+			p:rect(PAD + gx * ZOOM, PAD + gy * ZOOM, ZOOM, ZOOM, col)
 		end
 	end
 	local cx0 = PAD + half * ZOOM
@@ -56,21 +186,11 @@ local function draw_mag(p)
 	p:rect(cx0 - 1, cy0 + ZOOM, ZOOM + 2, 1, 0xffffff)
 	p:rect(cx0 - 1, cy0, 1, ZOOM, 0xffffff)
 	p:rect(cx0 + ZOOM, cy0, 1, ZOOM, 0xffffff)
-	if M.color then
-		p:text(PAD, PAD + GRID * ZOOM + 10, hex_of(M.color), ctx.theme.on_surface)
+	local label = M.color and hex_of(M.color) or "—"
+	if M.screen then
+		label = string.format("%s  %d,%d", label, M.cx, M.cy)
 	end
-end
-
-local function sample(rx, ry)
-	local half = math.floor(GRID / 2)
-	local rc = M.ctx.L.lbar_x_get_region(
-		M.ctx.Lctx, rx - half, ry - half, GRID, GRID, M.buf, GRID * GRID * 3)
-	M.ok = rc == 0
-	if M.ok then
-		local i = half * GRID + half
-		M.color = { r = M.buf[i * 3], g = M.buf[i * 3 + 1], b = M.buf[i * 3 + 2] }
-	end
-	return M.ok
+	p:text(PAD, PAD + GRID * ZOOM + 10, label, ctx.theme.on_surface)
 end
 
 local function finish_pick(ok)
@@ -79,6 +199,7 @@ local function finish_pick(ok)
 	ctx.L.lbar_ptr_ungrab(ctx.Lctx)
 	ctx.L.lbar_kbd_ungrab(ctx.Lctx)
 	M.mag:hide(true)
+	M.screen = nil
 	if ok and M.color then
 		local hex = hex_of(M.color)
 		if Clipboard.copy(hex) then
@@ -89,23 +210,16 @@ local function finish_pick(ok)
 	end
 end
 
-local function start_pick()
-	local ctx = M.ctx
-	if ctx.backend_kind ~= "x11" then
-		ctx.notify("color picker needs X11")
+local function move_cursor(p, dx, dy)
+	local s = M.screen
+	if not s then
 		return
 	end
-	ctx.close_panels()
-	M.ok = false
-	M.mx, M.my = math.floor(ctx.scr_w / 2), math.floor(ctx.scr_h / 2)
-	sample(M.mx, M.my)
-	M.mag:show_xy(
-		math.floor((ctx.scr_w - M.mag.w) / 2),
-		math.floor((ctx.scr_h - M.mag.h) / 2))
-	ctx.active_panel = M.mag
-	ctx.L.lbar_ptr_grab(ctx.Lctx, M.mag.id)
-	ctx.L.lbar_kbd_grab(ctx.Lctx, M.mag.id)
-	M.picking = true
+	local step = M.step or STEP
+	M.cx = math.max(0, math.min(s.w - 1, M.cx + dx * step))
+	M.cy = math.max(0, math.min(s.h - 1, M.cy + dy * step))
+	M.color = color_at(M.cx, M.cy)
+	place_mag(p)
 end
 
 local function do_draw(p)
@@ -168,10 +282,9 @@ function M.init(ctx)
 	M.ready = true
 	M.picking = false
 	M.color = nil
-	M.ok = false
-	M.mx, M.my = -1, -1
-
-	M.buf = ctx.ffi.new("unsigned char[?]", GRID * GRID * 3)
+	M.screen = nil
+	M.cx, M.cy = 0, 0
+	M.step = STEP
 
 	local panel = Panel.new(ctx, {
 		name = "color_picker",
@@ -211,43 +324,50 @@ function M.init(ctx)
 		end,
 		draw = draw_mag,
 		on_motion = function(p, mx, my, rx, ry)
-			M.mx, M.my = rx, ry
-			local nx, ny = rx + 20, ry + 20
-			if nx + p.w > ctx.scr_w then
-				nx = rx - p.w - 20
+			if not M.picking or not M.screen then
+				return
 			end
-			if ny + p.h > ctx.scr_h then
-				ny = ry - p.h - 20
-			end
-			if nx < 0 then
-				nx = 0
-			end
-			if ny < 0 then
-				ny = 0
-			end
-			p:move_to(nx, ny)
-			sample(rx, ry)
+			M.cx = math.max(0, math.min(M.screen.w - 1, rx))
+			M.cy = math.max(0, math.min(M.screen.h - 1, ry))
+			M.color = color_at(M.cx, M.cy)
+			place_mag(p)
 		end,
 		on_press = function(p, mx, my, btn, rx, ry)
-			if M.picking then
-				if btn == 1 then
-					M.mx, M.my = rx, ry
-					if sample(rx, ry) then
-						finish_pick(true)
-					else
-						finish_pick(false)
-					end
-				elseif btn ~= 4 and btn ~= 5 then
-					finish_pick(false)
+			if not M.picking then
+				return
+			end
+			if btn == 1 then
+				if M.screen then
+					M.cx = math.max(0, math.min(M.screen.w - 1, rx))
+					M.cy = math.max(0, math.min(M.screen.h - 1, ry))
+					M.color = color_at(M.cx, M.cy)
 				end
+				finish_pick(true)
+			elseif btn ~= 4 and btn ~= 5 then
+				finish_pick(false)
 			end
 		end,
-		on_key = function(p, sym)
-			if M.picking and sym == XK_ESCAPE then
+		on_key = function(p, sym, text, ctrl, shift)
+			if not M.picking then
+				return false
+			end
+			M.step = shift and 1 or STEP
+			if sym == XK_ESCAPE then
 				finish_pick(false)
 				return true
+			elseif sym == XK_LEFT then
+				move_cursor(p, -1, 0)
+			elseif sym == XK_RIGHT then
+				move_cursor(p, 1, 0)
+			elseif sym == XK_UP then
+				move_cursor(p, 0, -1)
+			elseif sym == XK_DOWN then
+				move_cursor(p, 0, 1)
+			elseif sym == XK_RETURN or sym == XK_KP_ENTER then
+				finish_pick(true)
+				return true
 			end
-			return M.picking
+			return true
 		end,
 	})
 	if not mag then

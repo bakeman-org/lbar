@@ -22,19 +22,6 @@ end
 
 local truncate = Util.truncate
 
-local function truncate_px(ctx, s, max_w)
-	if select(1, ctx.get_text_size(s)) <= max_w then
-		return s
-	end
-	for cut = #s, 1, -1 do
-		local t = s:sub(1, cut) .. "…"
-		if select(1, ctx.get_text_size(t)) <= max_w then
-			return t
-		end
-	end
-	return "…"
-end
-
 local function state_path()
 	local home = os.getenv("HOME") or "/tmp"
 	local base = os.getenv("XDG_STATE_HOME") or (home .. "/.local/state")
@@ -42,9 +29,17 @@ local function state_path()
 end
 
 local function save_state()
-	local f = io.open(state_path(), "w")
+	local path = M._state_path or state_path()
+	local f = io.open(path, "w")
 	if not f then
-		return
+		local dir = path:match("^(.*/)[^/]+$")
+		if dir then
+			os.execute("mkdir -p '" .. dir .. "' 2>/dev/null")
+		end
+		f = io.open(path, "w")
+		if not f then
+			return
+		end
 	end
 	local cur = (M.cur > 0) and M.playlist and M.playlist[M.cur] or nil
 	f:write(string.format("volume = %d\n", M.volume or 80))
@@ -53,7 +48,7 @@ local function save_state()
 end
 
 local function load_state()
-	local f = io.open(state_path(), "r")
+	local f = io.open(M._state_path or state_path(), "r")
 	if not f then
 		return nil
 	end
@@ -205,11 +200,8 @@ local function do_draw(p)
 		return select(1, ctx.get_text_size(str))
 	end
 
-	local ay = p:draw_header(L_MUSIC, Util.keybind_hint(ctx, "toggle_music_player"), m.PAD)
+	p:draw_header(L_MUSIC, Util.keybind_hint(ctx, "toggle_music_player"), m.PAD)
 	local cur = (M.cur > 0) and M.playlist[M.cur] or nil
-	local sub = cur and cur.title or "—"
-	local sub_max = p.rect_close.x - 12 - (m.PAD + tw(L_MUSIC) + 16)
-	p:text(m.PAD + tw(L_MUSIC) + 16, ay, truncate_px(ctx, sub, sub_max), T.on_var)
 
 	p:rrect(l.cover_x, l.cover_y, l.cover_sz, l.cover_sz, 20, T.surface_hi)
 	local g_ts = "♪"
@@ -398,6 +390,7 @@ end
 function M.init(ctx)
 	M.ctx = ctx
 	M.ready = false
+	M._state_path = ctx.config.music_state_file or state_path()
 	if not ctx.AUD then
 		log("audio lib missing")
 		return

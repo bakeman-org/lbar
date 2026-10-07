@@ -30,6 +30,10 @@ end
 
 function M.new(ctx, opts)
 	opts = opts or {}
+	local po = ctx.config and ctx.config.panel_opts and ctx.config.panel_opts[opts.name]
+	if po and po.dismiss_outside == false then
+		opts.ptr_grab = false
+	end
 	local self = setmetatable({}, Panel)
 	self.ctx = ctx
 	self.opts = opts
@@ -176,6 +180,41 @@ function Panel:rrect(x, y, w, h, r, c)
 end
 function Panel:text(x, y, str, fg)
 	self.ctx.L.xft_draw_rgba(self.ctx.ft_ctx, self.surf, self.w, self.h, x, y, str, fg)
+end
+
+function Panel:dump_bmp(path)
+	local w, h = self.w, self.h
+	local row = w * 3
+	local pad = (4 - (row % 4)) % 4
+	local stride = row + pad
+	local f = io.open(path, "wb")
+	if not f then
+		return false
+	end
+	local u16 = function(v)
+		return string.char(v % 256, math.floor(v / 256) % 256)
+	end
+	local u32 = function(v)
+		return string.char(v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256,
+			math.floor(v / 16777216) % 256)
+	end
+	f:write("BM", u32(54 + stride * h), u16(0), u16(0), u32(54))
+	f:write(u32(40), u32(w), u32(h), u16(1), u16(24), u32(0), u32(stride * h), u32(0), u32(0), u32(0), u32(0))
+	local bytes = ffi.cast("unsigned char*", self.surf)
+	local buf = ffi.new("unsigned char[?]", stride)
+	for y = h - 1, 0, -1 do
+		local src = y * w * 4
+		for x = 0, w - 1 do
+			local si = src + x * 4
+			local di = x * 3
+			buf[di] = bytes[si]
+			buf[di + 1] = bytes[si + 1]
+			buf[di + 2] = bytes[si + 2]
+		end
+		f:write(ffi.string(buf, stride))
+	end
+	f:close()
+	return true
 end
 
 function Panel:header_close(h)

@@ -30,3 +30,10 @@ TODO
 29. DONE music_player: header close hint key ctrl+alt+m; volume + last track persisted to ~/.local/state/lbar/music.conf (hot-reload keeps ctx._music_state)
 30. DONE panels resize reactively via ctrl+alt+shift+arrows (user_size + model_fn(ctx, user_size) rebuild in live_resize; flow panels recompute visible rows; fixed panels clamp to natural min); reset via ctrl+alt+shift+0
 31. DONE color_picker pick flow fixed: events now route to ctx.active_panel (magnifier was never in panels table); mag grabs keyboard during pick, Escape cancels
+32. DONE config.lua panel_opts per-panel scope: dismiss_outside = false keeps panel open on outside click + passes clicks through (launcher, sysmon, music_player); ctrl+alt+shift+s dumps visible panel to /tmp/lbar_<name>.bmp for UI feedback
+33. DONE launcher: short placeholder "search apps…" (was clipped at 440px input)
+34. DONE music_player: header subtitle removed (duplicated track title); state file configurable via config.music_state_file, save creates dir on demand
+35. DONE sysmon: search input centered in header strip (no longer overlaps CPU/spark); pid column width from widest visible pid (no name overlap); ctrl+k / right-click asks first — footer confirm strip "kill <pid> <name>?" with kill/cancel buttons, ctrl+k again confirms, Esc cancels
+36. DONE clip_hist redo: standard header with keybind hint; clear moved to footer bar (N / M count left, tonal clear button right)
+37. DONE color_picker rewritten: frozen full-screen capture on pick start (X11 one-shot XGetImage via lbar_x_get_region, wayland via grim PPM), magnifier + crosshair + click pick read from the frozen buffer (no more live-sampling white #FFFFFF bug); arrows move cursor (8px, shift = 1px), Enter picks, Esc/right-click cancels; works on x11 + wayland
+38. DONE ui_demo tabs (controls / lists / inventory): new draggable ui:scrollbar widget demo, widget inventory, panel list with keybinds

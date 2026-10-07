@@ -9,56 +9,89 @@ local XK_BACKSPACE = 0xff08
 
 local TOGS = { "wifi", "bluetooth", "do not disturb" }
 local ITEMS = { "item one - click me", "item two - hover me", "item three - selected" }
+local SB_ITEMS = { "row alpha", "row beta", "row gamma", "row delta", "row epsilon", "row zeta" }
+
+local WIDGET_LINES = {
+	"buttons (filled / tonal / text) · chips · labels",
+	"slider · progress · toggle · text field",
+	"list · scrollbar · card · divider",
+	"toast notifications · panel header · close",
+}
+
+local TABS = { "controls", "lists", "inventory" }
 
 local function build_model(ctx, user_size)
 	local lh = ctx.get_line_height()
 	local m = {}
 	m.LH = lh
 	m.PAD = 24
-	m.W = 560
+	m.W = 620
 	m.HEAD_H = lh + 26
 	m.SEC_H = lh + 6
-	local y = m.HEAD_H + 16
+	m.TAB_Y = m.HEAD_H + 14
+	m.TAB_H = lh + 12
+	local y = m.TAB_Y + m.TAB_H + 16
+	m.Y0 = y
 
-	m.BTN_LBL_Y = y
-	y = y + m.SEC_H
-	m.BTN_Y = y
 	m.BTN_H = lh + 20
-	y = y + m.BTN_H + 14
-
-	m.CHIP_Y = y
 	m.CHIP_H = lh + 12
-	y = y + m.CHIP_H + 14
-
-	m.SL_LBL_Y = y
-	y = y + m.SEC_H
-	m.SLIDER_Y = y + 8
-	y = y + 8 + 22 + 14
-
-	m.PROG_Y = y
-	y = y + 22 + 14
-
-	m.TOG_LBL_Y = y
-	y = y + m.SEC_H
-	m.TOG_Y = y
 	m.TOG_H = lh + 14
 	m.TOG_STEP = m.TOG_H + 8
-	y = y + m.TOG_STEP * 3 + 8
-
-	m.TF_LBL_Y = y
-	y = y + m.SEC_H
-	m.TF_Y = y
-	m.TF_H = lh + 16
-	y = y + m.TF_H + 14
-
-	m.LIST_LBL_Y = y
-	y = y + m.SEC_H
-	m.LIST_Y = y
 	m.LIST_ROW_H = lh + 12
-	m.LIST_ROWS = 3
-	y = y + m.LIST_ROW_H * m.LIST_ROWS + 6
+	m.PAN_ROW_H = lh + 10
 
-	m.H = y + 20
+	local cy = y
+	m.BTN_LBL_Y = cy
+	cy = cy + m.SEC_H
+	m.BTN_Y = cy
+	cy = cy + m.BTN_H + 14
+	m.CHIP_Y = cy
+	cy = cy + m.CHIP_H + 14
+	m.SL_LBL_Y = cy
+	cy = cy + m.SEC_H
+	m.SLIDER_Y = cy + 8
+	cy = cy + 8 + 22 + 14
+	m.PROG_Y = cy
+	cy = cy + 22 + 14
+	m.TOG_LBL_Y = cy
+	cy = cy + m.SEC_H
+	m.TOG_Y = cy
+	cy = cy + m.TOG_STEP * 3 + 8
+	m.TF_LBL_Y = cy
+	cy = cy + m.SEC_H
+	m.TF_Y = cy
+	m.TF_H = lh + 16
+	cy = cy + m.TF_H + 14
+	m.CONTROLS_H = cy - y
+
+	cy = y
+	m.LIST_LBL_Y = cy
+	cy = cy + m.SEC_H
+	m.LIST_Y = cy
+	cy = cy + m.LIST_ROW_H * 3 + 6
+	m.SB_LBL_Y = cy + 14
+	cy = m.SB_LBL_Y + m.SEC_H
+	m.SB_Y = cy
+	cy = cy + m.LIST_ROW_H * 3 + 6
+	m.LISTS_H = cy - y
+
+	cy = y
+	m.WID_LBL_Y = cy
+	cy = cy + m.SEC_H + #WIDGET_LINES * (lh + 6) + 10
+	m.PAN_LBL_Y = cy
+	cy = cy + m.SEC_H
+	m.PAN_Y = cy
+	local npans = 0
+	for _, kb in ipairs(ctx.config.keybinds or {}) do
+		if kb.group == "panels" and kb.action:find("^toggle_") then
+			npans = npans + 1
+		end
+	end
+	m.PAN_ROWS = math.ceil(npans / 2)
+	cy = cy + m.PAN_ROWS * m.PAN_ROW_H
+	m.INV_H = cy - y
+
+	m.H = math.max(m.CONTROLS_H, m.LISTS_H, m.INV_H) + y + 20
 	if user_size then
 		m.W = math.max(m.W, user_size.w)
 		m.H = math.max(m.H, user_size.h)
@@ -66,21 +99,10 @@ local function build_model(ctx, user_size)
 	return m
 end
 
-local function do_draw(p)
-	local m = p.m
-	local ctx = p.ctx
-	local T = ctx.theme
-	local ui = p.ui
+local function draw_controls(p)
+	local m, ctx, ui, T = p.m, p.ctx, p.ui, p.ctx.theme
 	local lh, PAD, W = m.LH, m.PAD, m.W
 	local inner = W - PAD * 2
-
-	local hy = p:draw_header("UI Components", Util.keybind_hint(ctx, "toggle_ui_demo"), PAD)
-	local tag = tostring(ctx.theme.name or "theme")
-	local tag_w = select(1, ctx.get_text_size(tag))
-	local tag_x = p.rect_close.x - 12 - tag_w
-	if tag_x > PAD + select(1, ctx.get_text_size("UI Components")) + 12 then
-		p:text(tag_x, hy, tag, T.hint)
-	end
 
 	ui:label(PAD, m.BTN_LBL_Y, "buttons", T.hint)
 	local bw = math.floor((inner - 24) / 3)
@@ -125,9 +147,15 @@ local function do_draw(p)
 
 	ui:label(PAD, m.TF_LBL_Y, "text field  (click, then type)", T.hint)
 	ui:text_field("demo_tf", PAD, m.TF_Y, inner, m.TF_H, M.text, { placeholder = "type here…" })
+end
+
+local function draw_lists(p)
+	local m, ctx, ui, T = p.m, p.ctx, p.ui, p.ctx.theme
+	local lh, PAD, W = m.LH, m.PAD, m.W
+	local inner = W - PAD * 2
 
 	ui:label(PAD, m.LIST_LBL_Y, "list", T.hint)
-	for i = 1, m.LIST_ROWS do
+	for i = 1, 3 do
 		local ry = m.LIST_Y + (i - 1) * m.LIST_ROW_H
 		local sel = M.sel == i
 		local hover = ui:hover(PAD, ry, inner, m.LIST_ROW_H)
@@ -139,6 +167,89 @@ local function do_draw(p)
 			M.sel = i
 			ctx.notify("selected: " .. ITEMS[i], { style = "info" })
 		end
+	end
+
+	ui:label(PAD, m.SB_LBL_Y, "scrollbar  (drag the thumb)", T.hint)
+	local vis = 3
+	local max_off = math.max(0, #SB_ITEMS - vis)
+	local list_w = inner - 22
+	local new_off = ui:scrollbar("demo_sb", PAD + list_w + 8, m.SB_Y, 8, m.LIST_ROW_H * vis,
+		M.sb_off, max_off)
+	if new_off ~= M.sb_off then
+		M.sb_off = new_off
+	end
+	for i = 1, vis do
+		local li = M.sb_off + i
+		if li > #SB_ITEMS then
+			break
+		end
+		local ry = m.SB_Y + (i - 1) * m.LIST_ROW_H
+		p:rrect(PAD, ry, list_w, m.LIST_ROW_H, 10, T.surface_hi)
+		p:text(PAD + 16, ry + math.floor((m.LIST_ROW_H - lh) / 2), SB_ITEMS[li], T.on_var)
+	end
+end
+
+local function draw_inventory(p)
+	local m, ctx, ui, T = p.m, p.ctx, p.ui, p.ctx.theme
+	local lh, PAD, W = m.LH, m.PAD, m.W
+
+	ui:label(PAD, m.WID_LBL_Y, "widgets", T.hint)
+	for i, wln in ipairs(WIDGET_LINES) do
+		p:text(PAD, m.WID_LBL_Y + m.SEC_H + (i - 1) * (lh + 6), wln, T.on_var)
+	end
+
+	ui:label(PAD, m.PAN_LBL_Y, "panels  (keybind or click the bar item)", T.hint)
+	local col_w = math.floor((W - PAD * 2) / 2)
+	local row, col = 0, 0
+	for _, kb in ipairs(ctx.config.keybinds or {}) do
+		if kb.group == "panels" and kb.action:find("^toggle_") then
+			local pname = kb.action:sub(8)
+			local x = PAD + col * col_w
+			local y2 = m.PAN_Y + row * m.PAN_ROW_H
+			p:text(x, y2, pname, T.on_var)
+			local hint = Util.keybind_hint(ctx, kb.action)
+			p:text(x + col_w - select(1, ctx.get_text_size(hint)), y2, hint, T.hint)
+			col = col + 1
+			if col == 2 then
+				col = 0
+				row = row + 1
+			end
+		end
+	end
+end
+
+local function do_draw(p)
+	local m = p.m
+	local ctx = p.ctx
+	local T = ctx.theme
+	local lh, PAD, W = m.LH, m.PAD, m.W
+
+	local hy = p:draw_header("UI Components", Util.keybind_hint(ctx, "toggle_ui_demo"), PAD)
+	local tag = tostring(ctx.theme.name or "theme")
+	local tag_w = select(1, ctx.get_text_size(tag))
+	local tag_x = p.rect_close.x - 12 - tag_w
+	if tag_x > PAD + select(1, ctx.get_text_size("UI Components")) + 12 then
+		p:text(tag_x, hy, tag, T.hint)
+	end
+
+	local ui = p.ui
+	local tx = PAD
+	for _, t in ipairs(TABS) do
+		local tw = select(1, ctx.get_text_size(t)) + 28
+		local active = M.tab == t
+		if ui:id_button("demo_tab_" .. t, tx, m.TAB_Y, tw, m.TAB_H, t,
+				{ filled = active, tonal = not active }) then
+			M.tab = t
+		end
+		tx = tx + tw + 10
+	end
+
+	if M.tab == "controls" then
+		draw_controls(p)
+	elseif M.tab == "lists" then
+		draw_lists(p)
+	else
+		draw_inventory(p)
 	end
 end
 
@@ -165,6 +276,8 @@ function M.init(ctx)
 	M.togs = { true, false, true }
 	M.text = ""
 	M.sel = 0
+	M.tab = "controls"
+	M.sb_off = 0
 
 	local panel = Panel.new(ctx, {
 		name = "ui_demo",

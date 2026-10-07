@@ -12,6 +12,7 @@ local PAGE_SIZE = 4096
 local PROC_FETCH_N = 200
 
 local XK_k = 0x6b
+local XK_ESCAPE = 0xff1b
 
 local function read_cpu_stat()
 	local f = io.open("/proc/stat", "r")
@@ -290,7 +291,7 @@ local function do_draw(p)
 	local search_x = PAD + select(1, ctx.get_text_size("System Monitor")) + 20
 	local search_w = hint_x - 12 - search_x
 	local search_h = lh + 4
-	local search_y = hh + math.floor((hh - search_h) / 2)
+	local search_y = math.floor((hh - search_h) / 2)
 	if search_w > 120 then
 		p.input:set_rect(search_x, search_y, search_w, search_h)
 		p.input:draw(p)
@@ -358,8 +359,19 @@ local function do_draw(p)
 	p:rect(PAD, y, inner_w, 1, T.outline)
 	y = y + 10
 
+	local pid_max = 0
+	for i = 0, m.VISIBLE_ROWS - 1 do
+		local idx = M.scroll + i + 1
+		if idx > #M.filtered then
+			break
+		end
+		local pw = select(1, ctx.get_text_size(tostring(M.filtered[idx].pid)))
+		if pw > pid_max then
+			pid_max = pw
+		end
+	end
 	local pid_x = PAD
-	local name_x = PAD + 90
+	local name_x = pid_x + pid_max + 26
 	local cpu_x = PAD + 440
 	local mem_x = PAD + 520
 	p:text(pid_x, y, "PID", T.hint)
@@ -387,7 +399,7 @@ local function do_draw(p)
 		if selected then
 			p:rect(PAD - 4, ry, inner_w + 8, row_h, T.surface_hover)
 		end
-		p:text(pid_x, ry, string.format("%-7d", proc.pid), selected and T.on_surface or T.on_var)
+		p:text(pid_x, ry, tostring(proc.pid), selected and T.on_surface or T.on_var)
 		local name = proc.name
 		if select(1, ctx.get_text_size(name)) > name_max_w then
 			local cut = #name
@@ -419,6 +431,28 @@ local function do_draw(p)
 
 	local by = H - m.FOOTER_H + 4
 	p:rect(PAD, by - 6, inner_w, 1, T.outline)
+	if M.pending then
+		local nm = M.pending.name
+		if #nm > 24 then
+			nm = nm:sub(1, 24) .. "…"
+		end
+		local q = string.format("kill %d %s?", M.pending.pid, nm)
+		local q_max = inner_w - 2 * 76 - 12 - 24
+		while #q > 4 and select(1, ctx.get_text_size(q)) > q_max do
+			q = q:sub(1, -2)
+		end
+		p:text(PAD, by + 4, q, T.crit)
+		local bw = 76
+		local bh = lh + 6
+		local byy = H - m.FOOTER_H + math.floor((m.FOOTER_H - bh) / 2)
+		if ui:id_button("sm_cancel", W - PAD - 2 * bw - 12, byy, bw, bh, "cancel", { tonal = true }) then
+			M.pending = nil
+		end
+		if ui:id_button("sm_kill", W - PAD - bw, byy, bw, bh, "kill", { filled = true, color = T.crit }) then
+			M:do_kill()
+		end
+		return
+	end
 	local total = #M.procs
 	local shown = #M.filtered
 	local status = (shown < total)
@@ -463,8 +497,21 @@ function M.init(ctx)
 			end,
 		},
 		on_key = function(p, sym, text, ctrl, shift, state)
+			if sym == XK_ESCAPE and M.pending then
+				M.pending = nil
+				return true
+			end
 			if ctrl and sym == XK_k then
-				M:kill_selected()
+				if M.pending then
+					M:do_kill()
+				else
+					for _, pr in ipairs(M.filtered) do
+						if pr.pid == M.selected_pid then
+							M:ask_kill(pr)
+							break
+						end
+					end
+				end
 				return true
 			end
 			if ctrl and sym == 0x66 then
@@ -474,6 +521,7 @@ function M.init(ctx)
 			return false
 		end,
 		on_show = function(p)
+			M.pending = nil
 			M.search_query = ""
 			if p.input then
 				p.input:set_value("")
@@ -505,7 +553,7 @@ function M.init(ctx)
 				if idx >= 1 and idx <= #M.filtered then
 					M.selected_pid = M.filtered[idx].pid
 					if btn == 3 then
-						M:kill_selected()
+						M:ask_kill(M.filtered[idx])
 					end
 				end
 				p:draw()
@@ -538,6 +586,7 @@ function M.init(ctx)
 
 	M.scroll = 0
 	M.selected_pid = nil
+	M.pending = nil
 	M.search_query = ""
 	M.refresh_acc = 0
 
@@ -567,13 +616,21 @@ function M.on_click(ctx, btn, lx, ly, gx, gw)
 	end
 end
 
-function M:kill_selected()
-	local pid = M.selected_pid
+function M:ask_kill(proc)
+	if not proc then
+		return
+	end
+	M.pending = { pid = proc.pid, name = proc.name }
+end
+
+function M:do_kill()
+	local pid = M.pending and M.pending.pid
 	if not pid or type(pid) ~= "number" then
 		return
 	end
 	os.execute("kill -TERM " .. pid .. " 2>/dev/null")
 	M.ctx.notify(string.format("SIGTERM sent to pid %d", pid), { style = "warning", duration = 2000 })
+	M.pending = nil
 	M.selected_pid = nil
 	M:sample()
 end

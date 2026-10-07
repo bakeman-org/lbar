@@ -90,11 +90,11 @@ function UI:id_button(id, x, y, w, h, text, opts)
 	local hover = self:hover(x, y, w, h)
 	local bg, fg
 	if opts.filled then
-		bg = hover and T.primary_hi or T.primary
+		bg = hover and T.primary_hi or (opts.color or T.primary)
 		fg = T.on_primary
 	elseif opts.tonal then
-		bg = hover and T.surface_hover or T.secondary_ctr
-		fg = T.primary
+		bg = hover and T.surface_hover or (opts.bg or T.secondary_ctr)
+		fg = opts.color or T.primary
 	else
 		bg = hover and T.surface_hover or (opts.bg or T.surface_hi)
 		fg = opts.color or T.on_surface
@@ -171,6 +171,34 @@ end
 
 function UI:divider(x, y, w, color)
 	self.surf:rect(x, y, w, 1, color or self.ctx.theme.outline)
+end
+
+function UI:scrollbar(id, x, y, w, h, offset, max_offset, opts)
+	opts = opts or {}
+	local T = self.ctx.theme
+	self.surf:rrect(x, y, w, h, math.floor(w / 2), opts.track or T.surface)
+	if max_offset <= 0 then
+		return math.max(0, offset), false
+	end
+	local th = math.max(24, math.floor(h * h / (h + max_offset)))
+	if h - th < 1 then
+		return math.max(0, offset), false
+	end
+	local ty = y + math.floor((h - th) * math.max(0, offset) / max_offset)
+	local over = self.mx >= x - 4 and self.mx <= x + w + 4
+		and self.my >= y and self.my <= y + h
+	if self.mdown and over and self.active_id ~= id then
+		self.active_id = id
+		self._sb_grab = self.my - ty
+	end
+	local dragging = self.active_id == id and self.mdown
+	if dragging and self._sb_grab then
+		local nty = self.my - self._sb_grab
+		local noff = math.floor((nty - y) / (h - th) * max_offset + 0.5)
+		offset = math.max(0, math.min(max_offset, noff))
+	end
+	self.surf:rrect(x, ty, w, th, math.floor(w / 2), opts.color or T.outline)
+	return offset, dragging
 end
 
 function UI:progress(x, y, w, h, pct, color, track)

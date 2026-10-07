@@ -171,7 +171,7 @@ function M.init(ctx)
 			M.scroll = 0
 		end,
 		input = {
-			placeholder = "search apps, or type a command and press Enter",
+			placeholder = "search apps…",
 			on_change = function(v)
 				M.query = v
 				M.apply_filter()

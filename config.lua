@@ -20,12 +20,25 @@ return {
 
     audio_panel_dir = '/home/etcix/Music',
 
+    -- music player state file (volume + last played track)
+    music_state_file = os.getenv('HOME') .. '/.local/state/lbar/music.conf',
+
     plugins = {
         'menu', 'cpu', 'mem', 'battery', 'clock', 'system',
         'keybinds_help', 'launcher', 'clip_hist', 'pomodoro',
         'music_player', 'weather', 'sysinfo', 'sysmon',
         'color_picker', 'ui_demo', 'hide_all',
         'move_window', 'resize_window',
+    },
+
+    -- per-panel scope: dismiss_outside = false keeps the panel open when
+    -- clicking outside it (outside clicks pass through to other apps)
+    panel_opts = {
+        launcher = { dismiss_outside = false },
+        sysmon = { dismiss_outside = false },
+        music_player = { dismiss_outside = false },
+        color_picker = { dismiss_outside = false },
+
     },
 
     -- same keybinds as xpet
@@ -56,6 +69,8 @@ return {
           group = 'panels', desc = 'system panel' },
         { mod = 'ctrl+alt', key = 'k', action = 'toggle_theme',
           group = 'system', desc = 'toggle dark / light theme' },
+        { mod = 'ctrl+alt+shift', key = 's', action = 'debug_dump_panel',
+          group = 'system', desc = 'dump visible panel screenshot to /tmp' },
 
         { mod = 'ctrl+alt', key = 'd', action = 'hide_all_windows',
           group = 'windows', desc = 'hide / restore all panels' },
