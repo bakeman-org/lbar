@@ -34,5 +34,6 @@ __prompt:
 	./collect-as-prompt *.lua src/ core/ plugins/ > /tmp/1.txt 
 
 
+# luastatic ref link: https://github.com/ers35/luastatic
 __native:
-	luastatic lbar.lua  -I /usr/include/luajit-2.1/  /usr/lib/x86_64-linux-gnu/libluajit-5.1.a
+	luastatic lbar.lua core/*.lua plugins/*.lua core/wm/*.lua   -I /usr/include/luajit-2.1/   /usr/lib/x86_64-linux-gnu/libluajit-5.1.a lbar.so lbar_audio.so 
