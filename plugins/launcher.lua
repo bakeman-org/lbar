@@ -2,6 +2,7 @@ local M = {}
 local bit = require("bit")
 local Panel = require("core.panel")
 local Util = require("core.util")
+local I = require("core.i18n")
 
 local log = Util.logger("launcher")
 local truncate = Util.truncate
@@ -12,20 +13,58 @@ local XK_e = 0x0065
 local XK_E = 0x0045
 local MOD1_MASK = 0x0008
 
-local function load_dmenu_path()
-	local out = {}
-	local p = io.popen("dmenu_path 2>/dev/null")
-	if not p then
-		return out
+-- dmenu_path (~3000 entries) is loaded as a background job; sync loading at
+-- init or on every show made the bar stutter and panels slow to open
+local function load_dmenu_async(ctx)
+	if M.job or not ctx then
+		return
 	end
-	for line in p:lines() do
+	local tmp = string.format("/tmp/lbar-dmenu-%d-%d", os.time(), math.random(10000))
+	os.execute(string.format("(dmenu_path 2>/dev/null; echo DONE) > %s 2>&1 &", "'" .. tmp .. "'"))
+	M.job = { path = tmp, acc = 0, total = 0 }
+end
+
+function M.merge_dmenu()
+	local j = M.job
+	if not j then
+		return
+	end
+	local f = io.open(j.path, "r")
+	if not f then
+		return false
+	end
+	local content = f:read("*a")
+	f:close()
+	if not content:find("DONE", 1, true) then
+		return false
+	end
+	os.remove(j.path)
+	M.job = nil
+	local cfg = M.ctx.config.launcher or {}
+	if cfg.use_dmenu_path == false then
+		return true
+	end
+	local seen = {}
+	for _, e in ipairs(M.entries) do
+		seen[e.name] = true
+	end
+	local added = 0
+	for line in (content .. "\n"):gmatch("([^\n]*)\n") do
 		local s = line:match("^%s*(.-)%s*$")
-		if s ~= "" then
-			out[#out + 1] = s
+		if s ~= "" and s ~= "DONE" and not seen[s] then
+			seen[s] = true
+			M.entries[#M.entries + 1] = { name = s, cmd = s }
+			added = added + 1
 		end
 	end
-	p:close()
-	return out
+	if added > 0 then
+		log("dmenu_path: +%d entries", added)
+		M.apply_filter()
+		if M.panel and M.panel.visible then
+			M.panel:draw()
+		end
+	end
+	return true
 end
 
 function M.reload_entries()
@@ -40,15 +79,6 @@ function M.reload_entries()
 		end
 	end
 
-	if cfg.use_dmenu_path ~= false then
-		for _, cmd in ipairs(load_dmenu_path()) do
-			if not seen[cmd] then
-				entries[#entries + 1] = { name = cmd, cmd = cmd }
-				seen[cmd] = true
-			end
-		end
-	end
-
 	M.entries = entries
 	M.filtered = entries
 	M.sel = #entries > 0 and 1 or 0
@@ -57,6 +87,7 @@ end
 
 local function build_model(ctx, user_size)
 	local lh = ctx.get_line_height()
+	local n = M.filtered and #M.filtered or 0
 	local m = {
 		LH = lh,
 		PAD = 20,
@@ -64,7 +95,7 @@ local function build_model(ctx, user_size)
 		APPBAR = lh + 26,
 		SEARCH_H = lh + 20,
 		ROW_H = lh + 20,
-		VROWS = 8,
+		VROWS = math.min(8, math.max(1, n)),
 	}
 	if user_size then
 		m.W = math.max(360, user_size.w)
@@ -81,9 +112,15 @@ local function do_draw(p)
 	local ui = p.ui
 	local T = ctx.theme
 	local lh = m.LH
+
+	-- self-heal on resize: model follows the live surface so derived rows
+	-- and right edges always match the real panel
+	m.W, m.H = p.w, p.h
+	local used = m.APPBAR + 14 + m.SEARCH_H + 12 + 14
+	m.VROWS = math.max(1, math.floor((m.H - used) / m.ROW_H))
 	local W, H = m.W, m.H
 
-	p:draw_header("Apps", Util.keybind_hint(ctx, "toggle_launcher"), m.PAD)
+	p:draw_header(I.t("Apps"), Util.keybind_hint(ctx, "toggle_launcher"), m.PAD)
 
 	local sy = m.APPBAR + 14
 	local in_w = W - m.PAD * 2 - 28 - 12
@@ -122,20 +159,21 @@ local function do_draw(p)
 	end
 
 	if n == 0 then
-		local empty = M.query ~= "" and "no matching apps, press Enter to run as command"
-			or "configure apps in config.lua launcher.entries"
-		p:text(math.floor(W / 2 - select(1, ctx.get_text_size(empty)) / 2), list_y + 40, empty, T.hint)
+		local empty = M.query ~= "" and I.t("no matching apps, press Enter to run as command")
+			or I.t("configure apps in config.lua launcher.entries")
+		local ey = list_y + math.min(40, math.max(0, m.VROWS * m.ROW_H - lh - 4))
+		p:text(math.floor(W / 2 - select(1, ctx.get_text_size(empty)) / 2), ey, empty, T.hint)
 	end
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size("apps")) + 20
+	return select(1, ctx.get_text_size(I.t("Apps"))) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)
 	local lh = ctx.get_line_height()
 	local active = ctx.active_plugin_name == "launcher" and ctx.popup_visible
-	s:text(x + 10, math.floor((h - lh) / 2), "apps", active and ctx.theme.primary or ctx.theme.on_surface)
+	s:text(x + 10, math.floor((h - lh) / 2), I.t("Apps"), active and ctx.theme.primary or ctx.theme.on_surface)
 end
 
 function M.on_click(ctx, btn, lx, ly, gx, gw)
@@ -148,6 +186,9 @@ function M.init(ctx)
 	M.ctx = ctx
 	M.query = ""
 	M.reload_entries()
+	if (ctx.config.launcher or {}).use_dmenu_path ~= false then
+		load_dmenu_async(ctx)
+	end
 
 	local panel = Panel.new(ctx, {
 		name = "launcher",
@@ -162,16 +203,20 @@ function M.init(ctx)
 		end,
 		draw = do_draw,
 		on_show = function(p)
-			M.reload_entries()
+			-- entries are cached; never block the open with a dmenu_path reload
 			M.query = ""
 			if p.input then
 				p.input:set_value("")
 			end
 			M.sel = #M.filtered > 0 and 1 or 0
 			M.scroll = 0
+			if #M.entries == 0 and not M.job
+				and (ctx.config.launcher or {}).use_dmenu_path ~= false then
+				load_dmenu_async(ctx)
+			end
 		end,
 		input = {
-			placeholder = "search apps…",
+			placeholder = I.t("search apps…"),
 			on_change = function(v)
 				M.query = v
 				M.apply_filter()
@@ -291,8 +336,33 @@ function M.submit(v)
 		end
 	end
 	M.run(q)
-	M.ctx.notify("ran: " .. truncate(q, 40), { style = "info" })
+	M.ctx.notify(I.t("ran: %s", truncate(q, 40)), { style = "info" })
 	M.panel:hide()
+end
+
+function M.tick(ctx, dt)
+	if M.job then
+		local j = M.job
+		j.total = (j.total or 0) + dt
+		j.acc = (j.acc or 0) + dt
+		if j.acc >= 300 then
+			j.acc = 0
+			if M.merge_dmenu() and ctx.bar then
+				ctx.bar.needs_redraw = true
+			end
+		end
+		if M.job and M.job.total > 15000 then
+			os.remove(M.job.path)
+			M.job = nil
+			log("dmenu_path timeout")
+		end
+	end
+	-- auto-fit when the filtered result count changes (cheap change guard;
+	-- fit() itself no-ops when the size already matches or user resized)
+	if M.panel and #M.filtered ~= (M.fit_n or -1) then
+		M.fit_n = #M.filtered
+		M.panel:fit()
+	end
 end
 
 function M.shutdown()

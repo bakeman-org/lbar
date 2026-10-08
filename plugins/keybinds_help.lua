@@ -1,6 +1,7 @@
 local M = {}
 local Panel = require("core.panel")
 local Util = require("core.util")
+local I = require("core.i18n")
 
 local log = Util.logger("keybinds_help")
 
@@ -93,7 +94,7 @@ local function build_model(ctx, user_size)
 		H_content = H_content + SEC_H + #rows * (ROW_BOX_H + ROW_GAP) + GAP
 	end
 	if #groups == 0 then
-		groups[1] = { title = "other", rows = { { combo = "(none)", desc = "no keybinds in config.lua" } } }
+		groups[1] = { title = "other", rows = { { combo = I.t("(none)"), desc = I.t("no keybinds in config.lua") } } }
 		H_content = SEC_H + ROW_BOX_H + ROW_GAP + GAP
 	end
 
@@ -119,6 +120,7 @@ local function build_model(ctx, user_size)
 		COMBO_COL = COMBO_COL,
 		W = W,
 		H = H,
+		content_h = H_content,
 		max_scroll = max_scroll,
 	}
 end
@@ -155,11 +157,17 @@ local function do_draw(p)
 	local ui = p.ui
 	local T = ctx.theme
 	local lh = m.LH
+
+	-- self-heal on resize: model follows the live surface so the scrollbar
+	-- track, row culling and scroll range always match the real panel
+	m.W, m.H = p.w, p.h
+	m.max_scroll = math.max(0, m.APPBAR + (m.content_h or 0) - m.H + 28)
+	st.max_scroll = m.max_scroll
+	st.scroll = clamp(st.scroll, 0, m.max_scroll)
 	local W, H = m.W, m.H
 	local tw = function(str)
 		return select(1, ctx.get_text_size(str))
 	end
-	st.max_scroll = m.max_scroll
 
 	local view_top = m.APPBAR
 	local view_bot = H
@@ -177,8 +185,9 @@ local function do_draw(p)
 	for _, g in ipairs(m.groups) do
 		local section_h = m.SEC_H + #g.rows * (m.ROW_BOX_H + ROW_GAP) + m.GAP
 		if y + section_h > view_top and y < view_bot then
-			local title_w = tw(g.title)
-			p:text(m.PAD, y, g.title, T.primary)
+			local gtitle = I.t(g.title)
+			local title_w = tw(gtitle)
+			p:text(m.PAD, y, gtitle, T.primary)
 			p:rect(m.PAD + title_w + 12, y + math.floor(lh / 2), W - m.PAD * 2 - title_w - 12, 1, T.outline)
 			y = y + m.SEC_H
 			for _, row in ipairs(g.rows) do
@@ -206,17 +215,17 @@ local function do_draw(p)
 		p:rrect(geo.track_x, geo.bar_y, geo.track_w, geo.bar_h, geo.track_w / 2, bar_color)
 	end
 
-	p:draw_header("Keybinds", Util.keybind_hint(ctx, "toggle_keybinds_help"), m.PAD)
+	p:draw_header(I.t("Keybinds"), Util.keybind_hint(ctx, "toggle_keybinds_help"), m.PAD)
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size("keys")) + 20
+	return select(1, ctx.get_text_size(I.t("Keys"))) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)
 	local lh = ctx.get_line_height()
 	local active = ctx.active_plugin_name == "keybinds_help" and ctx.popup_visible
-	s:text(x + 10, math.floor((h - lh) / 2), "keys", active and ctx.theme.primary or ctx.theme.on_surface)
+	s:text(x + 10, math.floor((h - lh) / 2), I.t("Keys"), active and ctx.theme.primary or ctx.theme.on_surface)
 end
 
 function M.on_click(ctx, btn, lx, ly, gx, gw)

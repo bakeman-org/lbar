@@ -1,6 +1,7 @@
 local M = {}
 local Panel = require("core.panel")
 local Util = require("core.util")
+local I = require("core.i18n")
 
 local log = Util.logger("pomodoro")
 local keybind_hint = Util.keybind_hint
@@ -42,12 +43,13 @@ local function do_draw(p)
 	local ui = p.ui
 	local T = ctx.theme
 	local lh = m.LH
+	m.W, m.H = p.w, p.h
 	local W, H = m.W, m.H
 	local tw = function(str)
 		return select(1, ctx.get_text_size(str))
 	end
 
-	local y = p:draw_header(L_TITLE, M.hint, 24) + 20
+	local y = p:draw_header(I.t(L_TITLE), M.hint, 24) + 20
 	local is_focus = M.mode == "focus"
 	local tcol = M.running and (is_focus and T.primary or T.good) or T.on_var
 	local tstr = fmt_ms(M.remaining)
@@ -65,32 +67,33 @@ local function do_draw(p)
 	y = y + m.PROG_H + 18
 	local chip_w = 90
 	local cx = math.floor((W - (chip_w * 2 + 12)) / 2)
-	if ui:id_button("pomo_focus", cx, y, chip_w, m.CHIP_H, L_FOCUS, { filled = is_focus }) then
+	if ui:id_button("pomo_focus", cx, y, chip_w, m.CHIP_H, I.t(L_FOCUS), { filled = is_focus }) then
 		M.set_mode("focus")
 	end
-	if ui:id_button("pomo_break", cx + chip_w + 12, y, chip_w, m.CHIP_H, L_BREAK, { filled = not is_focus }) then
+	if ui:id_button("pomo_break", cx + chip_w + 12, y, chip_w, m.CHIP_H, I.t(L_BREAK), { filled = not is_focus }) then
 		M.set_mode("break")
 	end
 
 	y = y + m.CHIP_H + 14
 	local btn_w = 110
 	local bx = math.floor((W - (btn_w * 2 + 12)) / 2)
-	if ui:id_button("pomo_run", bx, y, btn_w, m.BTN_H, M.running and L_PAUSE or L_START, { filled = true, radius = 14 }) then
+	if ui:id_button("pomo_run", bx, y, btn_w, m.BTN_H, M.running and I.t(L_PAUSE) or I.t(L_START),
+		{ filled = true, radius = 14 }) then
 		M.toggle_run()
 	end
-	if ui:id_button("pomo_reset", bx + btn_w + 12, y, btn_w, m.BTN_H, L_RESET, { tonal = true, radius = 14 }) then
+	if ui:id_button("pomo_reset", bx + btn_w + 12, y, btn_w, m.BTN_H, I.t(L_RESET), { tonal = true, radius = 14 }) then
 		M.reset_timer()
 	end
 
-	local dstr = string.format("completed %d", M.done)
+	local dstr = I.t("completed %d", M.done)
 	p:text(math.floor(W / 2 - tw(dstr) / 2), y + m.BTN_H + 10, dstr, T.hint)
 end
 
 function M.bar_label()
 	if M.running then
-		return (M.mode == "focus" and "focus " or "break ") .. fmt_ms(M.remaining)
+		return I.t(M.mode == "focus" and L_FOCUS or L_BREAK) .. " " .. fmt_ms(M.remaining)
 	end
-	return "pomo " .. fmt_ms(M.remaining)
+	return I.t("pomo") .. " " .. fmt_ms(M.remaining)
 end
 
 function M.width(ctx)
@@ -181,10 +184,10 @@ function M.finish()
 	if M.mode == "focus" then
 		M.done = M.done + 1
 		M.mode = "break"
-		M.ctx.notify(string.format("pomodoro #%d done, take a break", M.done), { style = "success" })
+		M.ctx.notify(I.t("pomodoro #%d done, take a break", M.done), { style = "success" })
 	else
 		M.mode = "focus"
-		M.ctx.notify("break over, next pomodoro", { style = "info" })
+		M.ctx.notify(I.t("break over, next pomodoro"), { style = "info" })
 	end
 	M.total = M.mode == "focus" and M.work_ms or M.break_ms
 	M.remaining = M.total

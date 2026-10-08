@@ -20,6 +20,7 @@ local Toast = require("core.toast")
 local Screenshot = require("core.screenshot")
 local Theme = require("core.theme")
 local Util = require("core.util")
+local I18n = require("core.i18n")
 local ffi = init.ffi
 local libc = init.libc
 local L = init.L
@@ -75,6 +76,7 @@ end
 
 local ctx = {
 	SCRIPT_DIR = SCRIPT_DIR,
+	config_path = CONFIG_PATH,
 	ffi = ffi,
 	L = L,
 	Lctx = Lctx,
@@ -104,6 +106,7 @@ function ctx.get_line_height()
 end
 
 ctx.theme = Theme.build(config)
+I18n.init(ctx)
 ctx.toast = Toast.new(ctx)
 ctx.notify = function(text, opts)
 	ctx.toast:show(text, opts)
@@ -118,7 +121,7 @@ function ctx.register_panel(name, panel)
 	end
 end
 
-function ctx.show_panel(name, anchor_x, anchor_y, direction)
+function ctx.show_panel(name, anchor_x, anchor_y, direction, align)
 	for n, p in pairs(panels) do
 		if n ~= name and p.visible then
 			p:hide(true)
@@ -137,7 +140,7 @@ function ctx.show_panel(name, anchor_x, anchor_y, direction)
 		return
 	end
 	if anchor_x then
-		p:show_at(anchor_x, anchor_y, direction)
+		p:show_at(anchor_x, anchor_y, direction, align)
 	else
 		p:show()
 	end
@@ -220,6 +223,7 @@ end
 local wpaths = watch_paths(config)
 local wmtimes = PluginMgr.snapshot_mtimes(wpaths)
 local auto_reload = true
+ctx.auto_reload = true
 local theme_dark = (config.theme_mode or "dark") ~= "light"
 
 local function reload_all()
@@ -249,6 +253,7 @@ local function reload_all()
 	config = newcfg
 	ctx.config = config
 	ctx.theme = Theme.build(config)
+	I18n.init(ctx)
 	theme_dark = (config.theme_mode or "dark") ~= "light"
 
 	if font_changed then
@@ -274,6 +279,11 @@ local function reload_all()
 	ctx.scr_w = L.lbar_screen_w(Lctx)
 	ctx.scr_h = L.lbar_screen_h(Lctx)
 
+	-- drop cached plugin modules: re-init from a clean state (stale M.panel
+	-- refs to destroyed panels broke re-init and silently dropped bar items)
+	for _, name in ipairs(config.plugins or {}) do
+		package.loaded["plugins." .. name] = nil
+	end
 	bar, err = build_bar(config)
 	if not bar then
 		log("bar rebuild failed: %s", tostring(err))
@@ -291,7 +301,8 @@ end
 actions.hot_reload = reload_all
 actions.toggle_auto_reload = function()
 	auto_reload = not auto_reload
-	ctx.notify(auto_reload and "auto reload on" or "auto reload off", { style = "info" })
+	ctx.auto_reload = auto_reload
+	ctx.notify(I18n.t(auto_reload and "auto reload on" or "auto reload off"), { style = "info" })
 end
 actions.hide_all_windows = function()
 	ctx.close_panels()
@@ -322,6 +333,8 @@ local function save_theme_mode(mode)
 	end
 	out:write(text)
 	out:close()
+	-- our own write must not trigger the auto-reload watcher
+	ctx.skip_reload_once = true
 	log("theme_mode saved: %s", mode)
 end
 
@@ -555,9 +568,16 @@ while true do
 			watch_accum = watch_accum + dt
 			if watch_accum >= WATCH_MS then
 				watch_accum = 0
-				if PluginMgr.watch(ctx, bar, wpaths, wmtimes) then
+				if ctx.skip_reload_once then
+					ctx.skip_reload_once = false
+					wmtimes = PluginMgr.snapshot_mtimes(wpaths)
+				elseif PluginMgr.watch(ctx, bar, wpaths, wmtimes) then
 					log("change detected, reloading...")
-					reload_all()
+					local ok_r, rerr = pcall(reload_all)
+					if not ok_r then
+						log("hot reload crashed, keeping old state: %s", tostring(rerr))
+					end
+					wmtimes = PluginMgr.snapshot_mtimes(wpaths)
 				end
 			end
 		end

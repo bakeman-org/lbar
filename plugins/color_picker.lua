@@ -3,6 +3,7 @@ local ffi = require("ffi")
 local Panel = require("core.panel")
 local Clipboard = require("core.clipboard")
 local Util = require("core.util")
+local I = require("core.i18n")
 
 local log = Util.logger("color_picker")
 
@@ -136,8 +137,8 @@ local function start_pick()
 	end
 	local scr = ctx.backend_kind == "x11" and capture_x11(ctx) or capture_wayland(ctx)
 	if not scr then
-		ctx.notify(ctx.backend_kind == "x11" and "screen capture failed"
-			or "screen capture failed (install grim)", { style = "error" })
+		ctx.notify(ctx.backend_kind == "x11" and I.t("screen capture failed")
+			or I.t("screen capture failed (install grim)"), { style = "error" })
 		return
 	end
 	M.screen = scr
@@ -203,7 +204,7 @@ local function finish_pick(ok)
 	if ok and M.color then
 		local hex = hex_of(M.color)
 		if Clipboard.copy(hex) then
-			ctx.notify(hex .. "  copied")
+			ctx.notify(hex .. "  " .. I.t("copied"))
 		else
 			ctx.notify(hex)
 		end
@@ -226,49 +227,57 @@ local function do_draw(p)
 	local m = p.m
 	local ctx = p.ctx
 	local T = ctx.theme
-	local lh, W = m.LH, m.W
+	local lh = m.LH
+
+	-- self-heal on resize: model follows the live surface; the swatch
+	-- stretches and hex/buttons stay anchored to the bottom edge
+	m.W, m.H = p.w, p.h
+	local W = m.W
+	m.BTN_Y = math.max(m.APPBAR + 16, m.H - m.BTN_H - 18)
+	m.HEX_Y = m.BTN_Y - lh - 14
+	local sw_h = math.max(1, m.HEX_Y - 12 - (m.APPBAR + 16))
 
 	local hint = Util.keybind_hint(ctx, "toggle_color_picker")
-	p:draw_header("Color Picker", hint, m.PAD)
+	p:draw_header(I.t("Color Picker"), hint, m.PAD)
 
 	local sw = W - m.PAD * 2
 	local sy = m.APPBAR + 16
-	p:rrect(m.PAD - 4, sy - 4, sw + 8, m.SWATCH_H + 8, 12, T.outline)
+	p:rrect(m.PAD - 4, sy - 4, sw + 8, sw_h + 8, 12, T.outline)
 	local col = M.color and (M.color.r * 0x10000 + M.color.g * 0x100 + M.color.b)
 		or T.surface_hi
-	p:rrect(m.PAD, sy, sw, m.SWATCH_H, 10, col)
+	p:rrect(m.PAD, sy, sw, sw_h, 10, col)
 
-	local hex = M.color and hex_of(M.color) or "not picked"
+	local hex = M.color and hex_of(M.color) or I.t("not picked")
 	local hexw = select(1, ctx.get_text_size(hex))
 	p:text(math.floor((W - hexw) / 2), m.HEX_Y, hex, T.on_surface)
 
 	local bw = math.floor((W - m.PAD * 2 - 14) / 2)
 	local ui = p.ui
-	if ui:id_button("cp_pick", m.PAD, m.BTN_Y, bw, m.BTN_H, "Pick", { filled = true }) then
+	if ui:id_button("cp_pick", m.PAD, m.BTN_Y, bw, m.BTN_H, I.t("Pick"), { filled = true }) then
 		start_pick()
 	end
-	if ui:id_button("cp_copy", m.PAD + bw + 14, m.BTN_Y, bw, m.BTN_H, "Copy", { tonal = true }) then
+	if ui:id_button("cp_copy", m.PAD + bw + 14, m.BTN_Y, bw, m.BTN_H, I.t("Copy"), { tonal = true }) then
 		if M.color then
 			local hex2 = hex_of(M.color)
 			if Clipboard.copy(hex2) then
-				ctx.notify(hex2 .. "  copied")
+				ctx.notify(hex2 .. "  " .. I.t("copied"))
 			else
 				ctx.notify(hex2)
 			end
 		else
-			ctx.notify("nothing picked yet")
+			ctx.notify(I.t("nothing picked yet"))
 		end
 	end
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size("pick")) + 20
+	return select(1, ctx.get_text_size(I.t("Pick"))) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)
 	local lh = ctx.get_line_height()
 	local active = ctx.active_plugin_name == "color_picker" and ctx.popup_visible
-	s:text(x + 10, math.floor((h - lh) / 2), "pick", active and ctx.theme.primary or ctx.theme.on_surface)
+	s:text(x + 10, math.floor((h - lh) / 2), I.t("Pick"), active and ctx.theme.primary or ctx.theme.on_surface)
 end
 
 function M.on_click(ctx, btn, lx, ly, gx, gw)

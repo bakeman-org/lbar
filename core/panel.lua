@@ -53,6 +53,8 @@ function M.new(ctx, opts)
 	self._drawing = false
 	self._kbd_grabbed = false
 	self.user_size = nil
+	self.draggable = opts.draggable ~= false
+	self._drag = nil
 	self.kbd = opts.kbd == true
 	self.ui = opts.ui == false and nil or UIfw.new(ctx)
 	if opts.input then
@@ -151,6 +153,30 @@ function Panel:live_resize(w, h)
 		self:draw()
 	end
 	return true
+end
+
+-- auto-fit: recompute the natural size from opts.size_fn and apply it.
+-- hidden panels resize directly; visible panels live-resize so content
+-- changes (list rows, new entries, scan results) re-fit reactively.
+-- a panel the user manually resized (user_size) keeps its size and only
+-- reflows its layout via the model.
+function Panel:fit()
+	if self.destroyed or not self.opts.size_fn or self.user_size then
+		return false
+	end
+	local w, h = self.opts.size_fn(self.ctx)
+	w = math.max(1, math.floor(w or 1))
+	h = math.max(1, math.floor(h or 1))
+	local ctx = self.ctx
+	w = math.min(w, ctx.scr_w - 16)
+	h = math.min(h, ctx.scr_h - 16)
+	if w == self.w and h == self.h then
+		return false
+	end
+	if self.visible then
+		return self:live_resize(w, h)
+	end
+	return self:resize(w, h)
 end
 
 function Panel:move_to(x, y)
@@ -258,13 +284,16 @@ function Panel:draw_header(title, hint, pad)
 	return H
 end
 
-function Panel:header_hit(mx, my)
+function Panel:close_hit(mx, my)
 	local r = self.rect_close
 	if not r then
 		return false
 	end
 	return mx >= r.x and mx < r.x + r.w and my >= r.y and my < r.y + r.h
 end
+
+-- compatibility alias: historically checked only the close button
+Panel.header_hit = Panel.close_hit
 
 function Panel:layout_free()
 	local ctx, w, h = self.ctx, self.w, self.h
@@ -315,12 +344,19 @@ function Panel:anim_dir()
 	return a
 end
 
-function Panel:show_at(anchor_x, anchor_y, direction)
+function Panel:show_at(anchor_x, anchor_y, direction, align)
 	local ctx = self.ctx
 	self:refit()
 	self.anchor_dir = direction or "below"
 	self.pos = nil
-	local x = math.floor(anchor_x - self.w / 2)
+	-- align "left" pins the popup's left edge to the anchor (android
+	-- PopupWindow style); default centers the popup on the anchor
+	local x
+	if align == "left" then
+		x = math.floor(anchor_x)
+	else
+		x = math.floor(anchor_x - self.w / 2)
+	end
 	x = clamp(x, 8, ctx.scr_w - 8 - self.w)
 	local y
 	if self.anchor_dir == "above" then
@@ -539,7 +575,18 @@ function Panel:draw()
 end
 
 function Panel:on_motion(mx, my, rx, ry)
-	if self.opts.ptr_grab ~= false
+	local d = self._drag
+	if d then
+		if not d.moved and (math.abs(mx - d.mx0) > 2 or math.abs(my - d.my0) > 2) then
+			d.moved = true
+		end
+		if d.moved then
+			self:move_to(d.sx + mx - d.mx0, d.sy + my - d.my0)
+			self.mx, self.my = mx, my
+			return
+		end
+	end
+	if not d and self.opts.ptr_grab ~= false
 		and (mx < 0 or my < 0 or mx >= self.w or my >= self.h) then
 		if self.mx ~= -1 or self.my ~= -1 then
 			self.mx, self.my = -1, -1
@@ -568,6 +615,15 @@ function Panel:on_press(btn, mx, my, rx, ry)
 		return false
 	end
 	self.mx, self.my = mx, my
+	-- close button handled centrally (runs before widget/plugin dispatch)
+	if btn == 1 and self:close_hit(mx, my) then
+		self:hide()
+		return true
+	end
+	-- drag from the header strip (anywhere except the close button)
+	if btn == 1 and self.draggable and self.header_h and my < self.header_h then
+		self._drag = { sx = self.sx, sy = self.sy, mx0 = mx, my0 = my, moved = false }
+	end
 	if self.ui and btn == 1 then
 		self.ui:press(mx, my)
 	end
@@ -589,8 +645,15 @@ function Panel:on_release(btn, mx, my, rx, ry)
 		return false
 	end
 	self.mx, self.my = mx, my
+	local d = self._drag
+	local moved = d and d.moved
+	self._drag = nil
 	if self.ui and btn == 1 then
 		self.ui:release(mx, my)
+		-- a drag ended over some widget: swallow the synthesized click
+		if moved and self.ui.mrelease then
+			self.ui.mrelease = nil
+		end
 	end
 	if self.input then
 		self.input:on_mouse_release()

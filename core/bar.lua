@@ -88,6 +88,25 @@ function Bar:layout()
 		p.x = x
 		x = x + p.w + gap
 	end
+	-- overflow: squeeze so every item stays inside the bar
+	local max_end = self.w - self.padding
+	if n > 1 and x - gap > max_end then
+		gap = math.max(0, math.floor((max_end - self.padding - total) / (n - 1)))
+		x = self.padding
+		for _, p in ipairs(self.plugins) do
+			p.x = x
+			x = x + p.w + gap
+		end
+		if x - gap > max_end and total > 0 then
+			local scale = (max_end - self.padding) / total
+			local acc = 0
+			for _, p in ipairs(self.plugins) do
+				p.x = self.padding + math.floor(acc)
+				acc = acc + p.w * scale
+			end
+			self.ctx.log("bar: %d items overflow, squeezed to fit", n)
+		end
+	end
 end
 
 function Bar:sync_size()

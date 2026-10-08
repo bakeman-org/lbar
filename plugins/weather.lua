@@ -1,6 +1,7 @@
 local M = {}
 local Panel = require("core.panel")
 local Util = require("core.util")
+local I = require("core.i18n")
 
 local log = Util.logger("weather")
 
@@ -156,22 +157,22 @@ end
 
 local function fmt_ago(t)
 	if not t or t < 0 then
-		return "waiting data"
+		return I.t("waiting data")
 	end
 	local s = os.time() - t
 	if s < 60 then
-		return "just updated"
+		return I.t("just updated")
 	end
 	local m = math.floor(s / 60)
 	if m < 60 then
-		return string.format("updated %d min ago", m)
+		return I.t("updated %d min ago", m)
 	end
-	return string.format("updated %d h ago", math.floor(m / 60))
+	return I.t("updated %d h ago", math.floor(m / 60))
 end
 
 local function fmt_location(w)
 	if not w or not w.city then
-		return "unknown location"
+		return I.t("unknown location")
 	end
 	if w.region and w.region ~= "" and w.region ~= w.city then
 		return w.city .. " · " .. w.region
@@ -191,10 +192,12 @@ local function do_draw(p)
 	local m = p.m
 	local ctx = p.ctx
 	local T = ctx.theme
+	-- self-heal: model follows the live surface size (user resize)
+	m.W, m.H = p.w, p.h
 	local lh, PAD = m.LH, m.PAD
 	local W, H = m.W, m.H
 
-	local hh = p:draw_header("Weather", Util.keybind_hint(ctx, "toggle_weather"), PAD)
+	local hh = p:draw_header(I.t("Weather"), Util.keybind_hint(ctx, "toggle_weather"), PAD)
 
 	local y = hh + 18
 
@@ -205,7 +208,7 @@ local function do_draw(p)
 			or string.format("%d°C", math.floor(w.temp))
 		p:text(PAD, y, temp, T.on_surface)
 
-		local icon = icon_for(w.desc)
+		local icon = I.t(icon_for(w.desc))
 		local iw = select(1, ctx.get_text_size(icon))
 		p:text(W - PAD - iw - 2, y - 2, icon, T.primary_hi)
 
@@ -223,9 +226,9 @@ local function do_draw(p)
 
 		local col_w = math.floor((W - PAD * 2) / 3)
 		local cells = {
-			{ "feels", string.format("%d°", math.floor(w.feels)) },
-			{ "humidity", string.format("%d%%", math.floor(w.humidity)) },
-			{ "wind", fmt_wind(w) },
+			{ I.t("feels"), string.format("%d°", math.floor(w.feels)) },
+			{ I.t("humidity"), string.format("%d%%", math.floor(w.humidity)) },
+			{ I.t("wind"), fmt_wind(w) },
 		}
 		for i, c in ipairs(cells) do
 			local cx = PAD + (i - 1) * col_w
@@ -233,16 +236,17 @@ local function do_draw(p)
 			p:text(cx, y + lh + 4, c[2], T.on_surface)
 		end
 	else
-		p:text(PAD, y, M.error or "fetching…", T.hint)
+		p:text(PAD, y, M.error or I.t("fetching…"), T.hint)
 		y = y + lh + 4
-		local hint = M.manual_city and ("manual city: " .. M.manual_city) or "auto-locate, first fetch ~1-2s"
+		local hint = M.manual_city and I.t("manual city: %s", M.manual_city)
+			or I.t("auto-locate, first fetch ~1-2s")
 		p:text(PAD, y, hint, T.hint)
 	end
 
 	local by = H - lh - 12
 	p:rect(PAD, by - 8, W - PAD * 2, 1, T.outline)
 
-	local status = M.data and fmt_ago(M.last_update_t) or M.error or "waiting data"
+	local status = M.data and fmt_ago(M.last_update_t) or M.error or I.t("waiting data")
 	p:text(PAD, by, status, T.hint)
 
 	local src = "wttr.in"
@@ -252,7 +256,7 @@ end
 
 function M.bar_label()
 	if not M.data then
-		return "wttr…"
+		return I.t("wttr…")
 	end
 	if M.units == "f" then
 		return string.format("%d°F", math.floor(M.data.temp * 9 / 5 + 32))
@@ -374,12 +378,12 @@ function M.tick(ctx, dt)
 					})
 				end
 			else
-				M.error = "parse failed"
+				M.error = I.t("parse failed")
 				M.need_redraw = true
 
 				if M.pending_notify then
 					M.pending_notify = false
-					M.ctx.notify("weather fetch failed", { style = "error", duration = 3000 })
+					M.ctx.notify(I.t("weather fetch failed"), { style = "error", duration = 3000 })
 				end
 			end
 		end

@@ -147,6 +147,10 @@ function Toast:show(text, opts)
 	local prepared, bw, bh = self:_prepare(text, style)
 
 	local p = self:_ensure_panel(bw, bh)
+	if not p then
+		log("toast panel create failed; dropping notification: %s", text)
+		return
+	end
 	self.text = prepared
 	self.style = style
 	self.w, self.h = bw, bh

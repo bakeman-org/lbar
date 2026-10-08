@@ -1,6 +1,7 @@
 local M = {}
 local Panel = require("core.panel")
 local Util = require("core.util")
+local I = require("core.i18n")
 
 local log = Util.logger("ui_demo")
 
@@ -104,29 +105,30 @@ local function draw_controls(p)
 	local lh, PAD, W = m.LH, m.PAD, m.W
 	local inner = W - PAD * 2
 
-	ui:label(PAD, m.BTN_LBL_Y, "buttons", T.hint)
+	ui:label(PAD, m.BTN_LBL_Y, I.t("buttons"), T.hint)
 	local bw = math.floor((inner - 24) / 3)
-	if ui:id_button("demo_fill", PAD, m.BTN_Y, bw, m.BTN_H, "Filled", { filled = true }) then
-		ctx.notify("filled button clicked", { style = "success" })
+	if ui:id_button("demo_fill", PAD, m.BTN_Y, bw, m.BTN_H, I.t("Filled"), { filled = true }) then
+		ctx.notify(I.t("filled button clicked"), { style = "success" })
 	end
-	if ui:id_button("demo_tonal", PAD + bw + 12, m.BTN_Y, bw, m.BTN_H, "Tonal", { tonal = true }) then
-		ctx.notify("tonal button clicked", { style = "info" })
+	if ui:id_button("demo_tonal", PAD + bw + 12, m.BTN_Y, bw, m.BTN_H, I.t("Tonal"), { tonal = true }) then
+		ctx.notify(I.t("tonal button clicked"), { style = "info" })
 	end
-	if ui:id_button("demo_text", PAD + (bw + 12) * 2, m.BTN_Y, bw, m.BTN_H, "Text", {}) then
-		ctx.notify("text button clicked")
+	if ui:id_button("demo_text", PAD + (bw + 12) * 2, m.BTN_Y, bw, m.BTN_H, I.t("Text"), {}) then
+		ctx.notify(I.t("text button clicked"))
 	end
 
 	local chips = { "chip alpha", "chip beta", "chip gamma" }
 	local cx = PAD
-	for i, c in ipairs(chips) do
+	for i, c0 in ipairs(chips) do
+		local c = I.t(c0)
 		local cw = select(1, ctx.get_text_size(c)) + 28
 		if ui:id_button("demo_chip" .. i, cx, m.CHIP_Y, cw, m.CHIP_H, c, { tonal = true, radius = math.floor(m.CHIP_H / 2) }) then
-			ctx.notify("chip: " .. c, { style = "info" })
+			ctx.notify(I.t("chip: %s", c), { style = "info" })
 		end
 		cx = cx + cw + 10
 	end
 
-	ui:label(PAD, m.SL_LBL_Y, string.format("slider  %.0f%%", M.val * 100), T.hint)
+	ui:label(PAD, m.SL_LBL_Y, I.t("slider  %.0f%%", M.val * 100), T.hint)
 	local nv, ch = ui:slider("demo_slider", PAD, m.SLIDER_Y, inner, M.val)
 	if ch then
 		M.val = nv
@@ -134,19 +136,19 @@ local function draw_controls(p)
 
 	ui:progress(PAD, m.PROG_Y, inner, 8, M.val * 100)
 
-	ui:label(PAD, m.TOG_LBL_Y, "toggles", T.hint)
+	ui:label(PAD, m.TOG_LBL_Y, I.t("toggles"), T.hint)
 	for i = 1, 3 do
 		local ry = m.TOG_Y + (i - 1) * m.TOG_STEP
-		ui:label(PAD, ry + math.floor((m.TOG_H - lh) / 2), TOGS[i], T.on_var)
+		ui:label(PAD, ry + math.floor((m.TOG_H - lh) / 2), I.t(TOGS[i]), T.on_var)
 		local nv2, ch2 = ui:toggle("demo_tog" .. i, W - PAD - 72, ry, 72, m.TOG_H, M.togs[i])
 		if ch2 then
 			M.togs[i] = nv2
-			ctx.notify(TOGS[i] .. (nv2 and " on" or " off"), { style = "info" })
+			ctx.notify(I.t(nv2 and "%s on" or "%s off", I.t(TOGS[i])), { style = "info" })
 		end
 	end
 
-	ui:label(PAD, m.TF_LBL_Y, "text field  (click, then type)", T.hint)
-	ui:text_field("demo_tf", PAD, m.TF_Y, inner, m.TF_H, M.text, { placeholder = "type here…" })
+	ui:label(PAD, m.TF_LBL_Y, I.t("text field  (click, then type)"), T.hint)
+	ui:text_field("demo_tf", PAD, m.TF_Y, inner, m.TF_H, M.text, { placeholder = I.t("type here…") })
 end
 
 local function draw_lists(p)
@@ -154,7 +156,7 @@ local function draw_lists(p)
 	local lh, PAD, W = m.LH, m.PAD, m.W
 	local inner = W - PAD * 2
 
-	ui:label(PAD, m.LIST_LBL_Y, "list", T.hint)
+	ui:label(PAD, m.LIST_LBL_Y, I.t("list"), T.hint)
 	for i = 1, 3 do
 		local ry = m.LIST_Y + (i - 1) * m.LIST_ROW_H
 		local sel = M.sel == i
@@ -162,15 +164,16 @@ local function draw_lists(p)
 		local bg = sel and T.secondary_ctr or hover and T.surface_hover or T.surface_hi
 		p:rrect(PAD, ry, inner, m.LIST_ROW_H, 10, bg)
 		p:text(PAD + 16, ry + math.floor((m.LIST_ROW_H - lh) / 2),
-			ITEMS[i], sel and T.primary or T.on_surface)
+			I.t(ITEMS[i]), sel and T.primary or T.on_surface)
 		if ui:clicked(PAD, ry, inner, m.LIST_ROW_H) then
 			M.sel = i
-			ctx.notify("selected: " .. ITEMS[i], { style = "info" })
+			ctx.notify(I.t("selected: %s", I.t(ITEMS[i])), { style = "info" })
 		end
 	end
 
-	ui:label(PAD, m.SB_LBL_Y, "scrollbar  (drag the thumb)", T.hint)
-	local vis = 3
+	ui:label(PAD, m.SB_LBL_Y, I.t("scrollbar  (drag the thumb)"), T.hint)
+	local vis = math.max(1, math.min(#SB_ITEMS,
+		math.floor((m.H - m.SB_Y - 8) / m.LIST_ROW_H)))
 	local max_off = math.max(0, #SB_ITEMS - vis)
 	local list_w = inner - 22
 	local new_off = ui:scrollbar("demo_sb", PAD + list_w + 8, m.SB_Y, 8, m.LIST_ROW_H * vis,
@@ -185,7 +188,7 @@ local function draw_lists(p)
 		end
 		local ry = m.SB_Y + (i - 1) * m.LIST_ROW_H
 		p:rrect(PAD, ry, list_w, m.LIST_ROW_H, 10, T.surface_hi)
-		p:text(PAD + 16, ry + math.floor((m.LIST_ROW_H - lh) / 2), SB_ITEMS[li], T.on_var)
+		p:text(PAD + 16, ry + math.floor((m.LIST_ROW_H - lh) / 2), I.t(SB_ITEMS[li]), T.on_var)
 	end
 end
 
@@ -193,12 +196,12 @@ local function draw_inventory(p)
 	local m, ctx, ui, T = p.m, p.ctx, p.ui, p.ctx.theme
 	local lh, PAD, W = m.LH, m.PAD, m.W
 
-	ui:label(PAD, m.WID_LBL_Y, "widgets", T.hint)
+	ui:label(PAD, m.WID_LBL_Y, I.t("widgets"), T.hint)
 	for i, wln in ipairs(WIDGET_LINES) do
-		p:text(PAD, m.WID_LBL_Y + m.SEC_H + (i - 1) * (lh + 6), wln, T.on_var)
+		p:text(PAD, m.WID_LBL_Y + m.SEC_H + (i - 1) * (lh + 6), I.t(wln), T.on_var)
 	end
 
-	ui:label(PAD, m.PAN_LBL_Y, "panels  (keybind or click the bar item)", T.hint)
+	ui:label(PAD, m.PAN_LBL_Y, I.t("panels  (keybind or click the bar item)"), T.hint)
 	local col_w = math.floor((W - PAD * 2) / 2)
 	local row, col = 0, 0
 	for _, kb in ipairs(ctx.config.keybinds or {}) do
@@ -222,22 +225,28 @@ local function do_draw(p)
 	local m = p.m
 	local ctx = p.ctx
 	local T = ctx.theme
+
+	-- self-heal on resize: model follows the live surface so inner widths
+	-- and the scrollbar demo clamp to the real panel
+	m.W, m.H = p.w, p.h
 	local lh, PAD, W = m.LH, m.PAD, m.W
 
-	local hy = p:draw_header("UI Components", Util.keybind_hint(ctx, "toggle_ui_demo"), PAD)
+	local title = I.t("UI Components")
+	local hy = p:draw_header(title, Util.keybind_hint(ctx, "toggle_ui_demo"), PAD)
 	local tag = tostring(ctx.theme.name or "theme")
 	local tag_w = select(1, ctx.get_text_size(tag))
 	local tag_x = p.rect_close.x - 12 - tag_w
-	if tag_x > PAD + select(1, ctx.get_text_size("UI Components")) + 12 then
+	if tag_x > PAD + select(1, ctx.get_text_size(title)) + 12 then
 		p:text(tag_x, hy, tag, T.hint)
 	end
 
 	local ui = p.ui
 	local tx = PAD
 	for _, t in ipairs(TABS) do
-		local tw = select(1, ctx.get_text_size(t)) + 28
+		local label = I.t(t)
+		local tw = select(1, ctx.get_text_size(label)) + 28
 		local active = M.tab == t
-		if ui:id_button("demo_tab_" .. t, tx, m.TAB_Y, tw, m.TAB_H, t,
+		if ui:id_button("demo_tab_" .. t, tx, m.TAB_Y, tw, m.TAB_H, label,
 				{ filled = active, tonal = not active }) then
 			M.tab = t
 		end
@@ -254,13 +263,13 @@ local function do_draw(p)
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size("ui")) + 20
+	return select(1, ctx.get_text_size(I.t("UI"))) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)
 	local lh = ctx.get_line_height()
 	local active = ctx.active_plugin_name == "ui_demo" and ctx.popup_visible
-	s:text(x + 10, math.floor((h - lh) / 2), "ui", active and ctx.theme.primary or ctx.theme.on_surface)
+	s:text(x + 10, math.floor((h - lh) / 2), I.t("UI"), active and ctx.theme.primary or ctx.theme.on_surface)
 end
 
 function M.on_click(ctx, btn, lx, ly, gx, gw)

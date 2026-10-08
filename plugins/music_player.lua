@@ -2,6 +2,7 @@ local M = {}
 local ffi = require("ffi")
 local Panel = require("core.panel")
 local Util = require("core.util")
+local I = require("core.i18n")
 
 local log = Util.logger("music_player")
 
@@ -88,8 +89,8 @@ local function scan(dir, AUD)
 end
 
 local L_MUSIC = "music"
-local L_PREV = "prev"
-local L_NEXT = "next"
+local L_PREV = "prev track"
+local L_NEXT = "next track"
 local L_REW = "-10s"
 local L_FF = "+10s"
 local L_PLAY = "play"
@@ -132,7 +133,7 @@ local function build_model(ctx, user_size)
 	local tw = function(s)
 		return select(1, ctx.get_text_size(s))
 	end
-	local wmax = math.max(tw(L_PREV), tw(L_REW), tw(L_PLAY), tw(L_FF), tw(L_NEXT))
+	local wmax = math.max(tw(I.t(L_PREV)), tw(I.t(L_REW)), tw(I.t(L_PLAY)), tw(I.t(L_PAUSE)), tw(I.t(L_FF)), tw(I.t(L_NEXT)))
 	m.BTN_W = wmax + 40
 	m.BTN_GAP = 16
 	return m
@@ -195,12 +196,16 @@ local function do_draw(p)
 	local ui = p.ui
 	local T = ctx.theme
 	local lh = m.LH
+	-- self-heal on resize: follow the live surface, re-derive visible rows
+	-- so the list/bottom bar always match p.w/p.h
+	m.W, m.H = p.w, p.h
+	m.VROWS = math.max(3, math.floor((m.H - (m.APPBAR + m.INFO_H + m.SECT_H) - m.BOTBAR) / m.ROW_H))
 	local l = layout(m)
 	local tw = function(str)
 		return select(1, ctx.get_text_size(str))
 	end
 
-	p:draw_header(L_MUSIC, Util.keybind_hint(ctx, "toggle_music_player"), m.PAD)
+	p:draw_header(I.t("music player"), Util.keybind_hint(ctx, "toggle_music_player"), m.PAD)
 	local cur = (M.cur > 0) and M.playlist[M.cur] or nil
 
 	p:rrect(l.cover_x, l.cover_y, l.cover_sz, l.cover_sz, 20, T.surface_hi)
@@ -208,7 +213,7 @@ local function do_draw(p)
 	local gw = tw(g_ts)
 	p:text(math.floor(l.cover_x + l.cover_sz / 2 - gw / 2), math.floor(l.cover_y + l.cover_sz / 2 - lh / 2), g_ts, T.primary)
 
-	local title = cur and cur.title or S_NO_TRK
+	local title = cur and cur.title or I.t(S_NO_TRK)
 	p:text(l.info_x, l.cover_y + 8, truncate(title, 48), T.on_surface)
 
 	if M.dur > 0 then
@@ -233,11 +238,11 @@ local function do_draw(p)
 	p:text(l.prog_x + l.prog_w - dur_w, l.time_y, dur_str, T.on_var)
 
 	local btns = {
-		{ "prev", L_PREV, false },
-		{ "rew", L_REW, false },
-		{ "play", (M.playing and not M.paused) and L_PAUSE or L_PLAY, true },
-		{ "ff", L_FF, false },
-		{ "next", L_NEXT, false },
+		{ "prev", I.t(L_PREV), false },
+		{ "rew", I.t(L_REW), false },
+		{ "play", (M.playing and not M.paused) and I.t(L_PAUSE) or I.t(L_PLAY), true },
+		{ "ff", I.t(L_FF), false },
+		{ "next", I.t(L_NEXT), false },
 	}
 	for i, item in ipairs(btns) do
 		local bx = l.btn_x0 + (i - 1) * (l.btn_w + l.btn_gap)
@@ -259,7 +264,7 @@ local function do_draw(p)
 
 	p:rect(0, l.sect_y, m.W, l.sect_h, T.bg)
 	local sy = l.sect_y + math.floor((l.sect_h - lh) / 2)
-	p:text(m.PAD, sy, L_QUEUE, T.primary)
+	p:text(m.PAD, sy, I.t(L_QUEUE), T.primary)
 	local cnt = string.format("%d / %d", M.cur, #M.playlist)
 	local cnt_w = tw(cnt)
 	p:text(m.W - m.PAD - cnt_w, sy, cnt, T.hint)
@@ -273,6 +278,8 @@ local function do_draw(p)
 	p:rect(0, l.sect_y + l.sect_h - 1, m.W, 1, T.outline)
 
 	local mx_scroll = math.max(0, #M.filtered - m.VROWS)
+	M.scroll = math.min(M.scroll, mx_scroll)
+	M.scroll = math.max(0, M.scroll)
 	for i = 1, m.VROWS do
 		local li = M.scroll + i
 		if li > #M.filtered then
@@ -322,20 +329,20 @@ local function do_draw(p)
 	local bty = l.bot_y + math.floor((l.bot_h - lh) / 2)
 	local status
 	if M.cur == 0 then
-		status = S_READY
+		status = I.t(S_READY)
 	elseif M.paused then
-		status = S_PAUSED
+		status = I.t(S_PAUSED)
 	elseif M.playing then
-		status = S_PLAYING
+		status = I.t(S_PLAYING)
 	else
-		status = S_STOPPED
+		status = I.t(S_STOPPED)
 	end
 	local dot_col = (M.playing and not M.paused) and T.good or T.outline
 	p:rrect(m.PAD, bty + math.floor(lh / 2) - 4, 8, 8, 4, dot_col)
 	p:text(m.PAD + 20, bty, status, T.on_var)
 
 	if M.search_query ~= "" then
-		local hint = string.format("filter %d / %d", #M.filtered, #M.playlist)
+		local hint = I.t("filter %d / %d", #M.filtered, #M.playlist)
 		local hw = tw(hint)
 		p:text(math.floor(m.W / 2 - hw / 2), bty, hint, T.hint)
 	end
@@ -344,8 +351,8 @@ local function do_draw(p)
 	local pct_w = tw(pct_str)
 	local vol_w = 100
 	local vol_x = m.W - m.PAD - pct_w - 12 - vol_w
-	local vol_lbl_w = tw(L_VOL)
-	p:text(vol_x - 12 - vol_lbl_w, bty, L_VOL, T.on_var)
+	local vol_lbl_w = tw(I.t(L_VOL))
+	p:text(vol_x - 12 - vol_lbl_w, bty, I.t(L_VOL), T.on_var)
 	local new_vol, changed = ui:slider("mp_vol", vol_x, bty + math.floor(lh / 2) - 2, vol_w, M.volume, {
 		min = 0,
 		max = 100,
@@ -362,7 +369,7 @@ end
 function M.bar_label()
 	local cur = (M.cur > 0) and M.playlist and M.playlist[M.cur] or nil
 	if not cur then
-		return "♪ music"
+		return I.t("♪ music")
 	end
 	local mark = (M.playing and not M.paused) and "▶ " or "♪ "
 	return mark .. truncate(cur.title, 26)
@@ -422,7 +429,7 @@ function M.init(ctx)
 		end,
 		draw = do_draw,
 		input = {
-			placeholder = "ctrl+f search",
+			placeholder = I.t("ctrl+f search"),
 			on_change = function(v)
 				M.search_query = v
 				M.apply_filter()
@@ -469,6 +476,7 @@ function M.init(ctx)
 	ctx.register_panel("music_player", panel)
 
 	M.playlist = scan(ctx.config.audio_panel_dir, ctx.AUD)
+	M._fit_tracks = #M.playlist
 	if S.track and S.track ~= "" then
 		for i, it in ipairs(M.playlist) do
 			if it.path == S.track then
@@ -511,7 +519,7 @@ end
 
 function M.toggle()
 	if not M.ready then
-		M.ctx.notify("audio unavailable", { style = "error" })
+		M.ctx.notify(I.t("audio unavailable"), { style = "error" })
 		return
 	end
 	M.panel:toggle()
@@ -529,6 +537,12 @@ function M.tick(ctx, dt)
 	M.poll = M.poll + dt
 	if M.poll >= 200 then
 		M.poll = 0
+		-- auto-fit when a content-driven size input changed (playlist size is
+		-- the only data-dependent term in size_fn); fit() no-ops if unchanged
+		if M._fit_tracks ~= #M.playlist then
+			M._fit_tracks = #M.playlist
+			p:fit()
+		end
 		local pl = A.audio_is_playing() ~= 0
 		local pa = A.audio_is_paused() ~= 0
 		local po = A.audio_get_position()

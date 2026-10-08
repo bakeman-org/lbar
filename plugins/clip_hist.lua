@@ -2,6 +2,7 @@ local M = {}
 local Panel = require("core.panel")
 local Clipboard = require("core.clipboard")
 local Util = require("core.util")
+local I = require("core.i18n")
 
 local log = Util.logger("clip_hist")
 local keybind_hint = Util.keybind_hint
@@ -63,6 +64,7 @@ end
 
 local function build_model(ctx, user_size)
 	local lh = ctx.get_line_height()
+	local n = M.filtered and #M.filtered or 0
 	local m = {
 		LH = lh,
 		W = 560,
@@ -70,7 +72,7 @@ local function build_model(ctx, user_size)
 		SEARCH_H = lh + 20,
 		ROW_H = lh + 22,
 		FOOTER_H = lh + 22,
-		VROWS = 8,
+		VROWS = math.min(8, math.max(1, n)),
 	}
 	if user_size then
 		m.W = math.max(400, user_size.w)
@@ -87,12 +89,18 @@ local function do_draw(p)
 	local ui = p.ui
 	local T = ctx.theme
 	local lh = m.LH
+
+	-- self-heal on resize: model follows the live surface so rows, footer
+	-- and right edges always match the real panel
+	m.W, m.H = p.w, p.h
+	local used = m.APPBAR + 14 + m.SEARCH_H + 12 + m.FOOTER_H
+	m.VROWS = math.max(1, math.floor((m.H - used) / m.ROW_H))
 	local W, H = m.W, m.H
 	local tw = function(str)
 		return select(1, ctx.get_text_size(str))
 	end
 
-	p:draw_header(L_TITLE, M.hint, 24)
+	p:draw_header(I.t(L_TITLE), M.hint, 24)
 
 	local sy = m.APPBAR + 14
 	p.input:set_rect(24, sy, W - 48, m.SEARCH_H)
@@ -142,9 +150,11 @@ local function do_draw(p)
 	end
 
 	if n == 0 then
-		local empty = M.query ~= "" and L_NO_MATCH or L_EMPTY
+		local empty = M.query ~= "" and I.t(L_NO_MATCH) or I.t(L_EMPTY)
 		local ew = tw(empty)
-		p:text(math.floor(W / 2 - ew / 2), list_y + math.floor(m.ROW_H * 0.6), empty, T.hint)
+		local ey = list_y + math.min(math.floor(m.ROW_H * 0.6),
+			math.max(0, m.VROWS * m.ROW_H - lh - 2))
+		p:text(math.floor(W / 2 - ew / 2), ey, empty, T.hint)
 	end
 
 	p:rect(0, footer_y, W, m.FOOTER_H, T.surface)
@@ -155,19 +165,19 @@ local function do_draw(p)
 	local bw = 84
 	local bh = lh + 10
 	local byy = footer_y + math.floor((m.FOOTER_H - bh) / 2)
-	if ui:id_button("clip_clear", W - 24 - bw, byy, bw, bh, L_CLEAR, { tonal = true }) then
+	if ui:id_button("clip_clear", W - 24 - bw, byy, bw, bh, I.t(L_CLEAR), { tonal = true }) then
 		M.clear_all()
 	end
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size("clip")) + 20
+	return select(1, ctx.get_text_size(I.t("Clip"))) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)
 	local lh = ctx.get_line_height()
 	local active = ctx.active_plugin_name == "clip_hist" and ctx.popup_visible
-	s:text(x + 10, math.floor((h - lh) / 2), "clip", active and ctx.theme.primary or ctx.theme.on_surface)
+	s:text(x + 10, math.floor((h - lh) / 2), I.t("Clip"), active and ctx.theme.primary or ctx.theme.on_surface)
 end
 
 function M.on_click(ctx, btn, lx, ly, gx, gw)
@@ -200,7 +210,7 @@ function M.init(ctx)
 		end,
 		draw = do_draw,
 		input = {
-			placeholder = "filter history",
+			placeholder = I.t("filter history"),
 			on_change = function(v)
 				M.query = v
 				M.apply_filter()
@@ -243,6 +253,12 @@ function M.tick(ctx, dt)
 	if M.acc >= POLL_MS then
 		M.acc = 0
 		M.poll()
+	end
+	-- auto-fit when the visible entry count changes (cheap change guard;
+	-- fit() itself no-ops when the size already matches or user resized)
+	if #M.filtered ~= (M.fit_n or -1) then
+		M.fit_n = #M.filtered
+		M.panel:fit()
 	end
 end
 
@@ -293,9 +309,9 @@ end
 function M.copy_row(e)
 	if Clipboard.copy(e.text) then
 		M.last = e.text
-		M.ctx.notify("copied", { style = "success" })
+		M.ctx.notify(I.t("copied"), { style = "success" })
 	else
-		M.ctx.notify("copy failed", { style = "error" })
+		M.ctx.notify(I.t("copy failed"), { style = "error" })
 	end
 end
 
@@ -303,7 +319,7 @@ function M.clear_all()
 	M.history = {}
 	M.filtered = M.history
 	M.scroll = 0
-	M.ctx.notify("clipboard history cleared", { style = "plain" })
+	M.ctx.notify(I.t("clipboard history cleared"), { style = "plain" })
 	M.panel:draw()
 end
 

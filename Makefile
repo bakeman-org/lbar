@@ -28,5 +28,11 @@ clean:
 
 .PHONY: all clean
 
+
+# private targets for development
 __prompt:
 	./collect-as-prompt *.lua src/ core/ plugins/ > /tmp/1.txt 
+
+
+__native:
+	luastatic lbar.lua  -I /usr/include/luajit-2.1/  /usr/lib/x86_64-linux-gnu/libluajit-5.1.a

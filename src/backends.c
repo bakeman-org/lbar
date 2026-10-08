@@ -158,7 +158,7 @@ static void zwlr_ls_destroy(struct zwlr_layer_surface_v1 *ls) {
 }
 
 #define LBAR_EV_MAX 64
-#define LBAR_POPUP_MAX 16
+#define LBAR_POPUP_MAX 32
 
 typedef struct {
   int type; /* 1=motion 2=press 3=release 4=expose/popup-hidden 5=key */
@@ -377,6 +377,10 @@ static int shm_fd_create(size_t size) {
   return fd;
 }
 
+static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps);
+static void seat_name(void *data, struct wl_seat *seat, const char *name);
+static const struct wl_seat_listener seat_listener;
+
 static void wl_registry_global(void *data, struct wl_registry *reg,
                                uint32_t name, const char *iface, uint32_t ver) {
   lbar_ctx *c = data;
@@ -392,6 +396,7 @@ static void wl_registry_global(void *data, struct wl_registry *reg,
   } else if (!strcmp(iface, "wl_seat")) {
     c->wl_seat =
         wl_registry_bind(reg, name, &wl_seat_interface, ver > 5 ? 5 : ver);
+    wl_seat_add_listener(c->wl_seat, &seat_listener, c);
     c->have_seat = 1;
     LOG_INFO("wl_seat v%u", ver);
   } else if (!strcmp(iface, "wl_output")) {
@@ -835,9 +840,6 @@ static int wl_open(lbar_ctx *c) {
     return -2;
   }
 
-  if (c->have_seat) {
-    wl_seat_add_listener(c->wl_seat, &seat_listener, c);
-  }
   wl_display_roundtrip(c->wl_dpy);
   LOG_INFO("wayland connected");
   return 0;

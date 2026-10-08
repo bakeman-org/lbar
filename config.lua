@@ -9,9 +9,12 @@ return {
     -- builtin themes: md3_dark md3_light one_dark one_light gruvbox_dark gruvbox_light
     -- nord catppuccin_mocha catppuccin_latte tokyo_night tokyo_night_day
     -- solarized_dark solarized_light
-    theme       = 'tokyo_night',
-    theme_light = 'tokyo_night_day',
-    theme_mode  = 'dark',
+    theme       = 'nord',
+    theme_light = 'one_light',
+    theme_mode  = 'light',
+
+    -- UI language: 'auto' (detect from $LANG) | 'en' | 'zh'
+    lang = 'zh',
 
     font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
     font_size = 18,
@@ -25,11 +28,43 @@ return {
     music_state_file = os.getenv('HOME') .. '/.local/state/lbar/music.conf',
 
     plugins = {
-        'logo', 'cpu', 'mem', 'battery', 'clock', 'system',
+        'logo', 'cpu', 'mem', 'battery', 'volume', 'clock',
         'keybinds_help', 'launcher', 'clip_hist', 'pomodoro',
         'music_player', 'weather', 'sysinfo', 'sysmon',
         'color_picker', 'ui_demo', 'hide_all',
         'move_window', 'resize_window',
+        'settings', 'wallpaper', 'wifi', 'power',
+    },
+
+    -- cpu/mem bar item styles: 'text' | 'graph' | 'both'
+    cpu = {
+        style = 'both',
+        interval_ms = 1000,
+        history = 24,          -- sparkline samples in bar item
+        color = true,          -- color by load (good/warn/crit)
+    },
+    mem = {
+        style = 'both',
+        interval_ms = 2000,
+        color = true,
+    },
+
+    wifi = {
+        interface = 'auto',    -- or e.g. 'wlan0'
+        refresh_sec = 8,
+    },
+
+    wallpaper = {
+        dir = '~/Pictures',    -- string or list of dirs
+        depth = 3,             -- find maxdepth
+        -- set_cmd = 'swww img "$f"',  -- force a custom setter ($f = file path)
+    },
+
+    power = {
+        lock_cmd = 'swaylock -f',
+        -- logout_cmd = 'niri msg action quit',  -- auto: niri/hyprland/sway
+        confirm = true,        -- ask before logout/sleep/reboot/poweroff
+        -- items = { 'lock', 'logout', 'sleep', 'reboot', 'poweroff' },
     },
 
     -- per-panel scope: dismiss_outside = false keeps the panel open when
@@ -40,6 +75,11 @@ return {
         music_player = { dismiss_outside = false },
         color_picker = { dismiss_outside = false },
         sysinfo = { dismiss_outside = false },
+        settings = { dismiss_outside = false },
+        wallpaper = { dismiss_outside = false },
+        wifi = { dismiss_outside = false },
+        power = { dismiss_outside = false },
+        volume = { dismiss_outside = false },
     },
 
     -- same keybinds as xpet
@@ -66,8 +106,16 @@ return {
           group = 'panels', desc = 'ui component demo' },
         { mod = 'ctrl+alt', key = 'g', action = 'toggle_clock',
           group = 'panels', desc = 'clock panel' },
-        { mod = 'ctrl+alt', key = 'y', action = 'toggle_system',
-          group = 'panels', desc = 'system panel' },
+        { mod = 'ctrl+alt', key = 's', action = 'toggle_volume',
+          group = 'panels', desc = 'volume panel' },
+        { mod = 'ctrl+alt', key = 'j', action = 'toggle_settings',
+          group = 'panels', desc = 'settings panel' },
+        { mod = 'ctrl+alt', key = 'p', action = 'toggle_wallpaper',
+          group = 'panels', desc = 'wallpaper picker' },
+        { mod = 'ctrl+alt', key = 'n', action = 'toggle_wifi',
+          group = 'panels', desc = 'wifi networks' },
+        { mod = 'ctrl+alt', key = 'o', action = 'toggle_power',
+          group = 'panels', desc = 'power menu' },
         { mod = 'ctrl+alt', key = 'k', action = 'toggle_theme',
           group = 'system', desc = 'toggle dark / light theme' },
         { mod = 'ctrl+alt+shift', key = 's', action = 'debug_dump_panel',
@@ -108,7 +156,7 @@ return {
 
     panels = {
         clock          = { pos = 'center', anim = 'auto' },
-        system         = { pos = 'center', anim = 'auto' },
+        volume         = { pos = 'center', anim = 'auto' },
         launcher       = { pos = 'top', anim = 'slide_down' },
         clip_hist      = { pos = 'center', anim = 'auto' },
         pomodoro       = { pos = 'bottom_right', anim = 'auto' },
@@ -119,6 +167,10 @@ return {
         color_picker   = { pos = 'center', anim = 'auto' },
         ui_demo        = { pos = 'center', anim = 'auto' },
         keybinds_help  = { pos = 'center', anim = 'auto' },
+        settings       = { pos = 'center', anim = 'auto' },
+        wallpaper      = { pos = 'center', anim = 'auto' },
+        wifi           = { pos = 'top_right', anim = 'auto' },
+        power          = { pos = 'center', anim = 'auto' },
     },
 
     pomodoro = {
@@ -128,6 +180,11 @@ return {
 
     clip_hist = {
         max_items = 30,
+    },
+
+    clock = {
+        -- schedule / alarms file, one entry per line: 'YYYY-MM-DD HH:MM text'
+        schedule_file = os.getenv('HOME') .. '/.local/state/lbar/schedule.conf',
     },
 
     launcher = {

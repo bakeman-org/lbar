@@ -118,10 +118,11 @@ function M.keybind_hint(ctx, action)
 	return "?"
 end
 
-function M.toggle_from_bar(ctx, name, gx, gw)
+function M.toggle_from_bar(ctx, name, gx, gw, align)
 	local dir = (ctx.config.position == "bottom") and "above" or "below"
 	local ay = (ctx.config.position == "top") and ctx.bar.h or (ctx.scr_h - ctx.bar.h)
-	ctx.show_panel(name, gx + gw / 2, ay, dir)
+	local ax = (align == "left") and gx or (gx + gw / 2)
+	ctx.show_panel(name, ax, ay, dir, align)
 end
 
 return M

@@ -1,5 +1,6 @@
 local M = {}
 local Util = require("core.util")
+local I = require("core.i18n")
 
 local log = Util.logger("hide_all")
 
@@ -27,9 +28,9 @@ function M.hide_all()
 		end
 	end
 	if count > 0 then
-		ctx.notify(string.format("closed %d panel(s)", count), { style = "info" })
+		ctx.notify(I.t("closed %d panel(s)", count), { style = "info" })
 	else
-		ctx.notify("no open panels", { style = "plain" })
+		ctx.notify(I.t("no open panels"), { style = "plain" })
 	end
 end
 

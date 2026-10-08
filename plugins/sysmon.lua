@@ -1,6 +1,7 @@
 local M = {}
 local Panel = require("core.panel")
 local Util = require("core.util")
+local I = require("core.i18n")
 
 local log = Util.logger("sysmon")
 
@@ -13,6 +14,25 @@ local PROC_FETCH_N = 200
 
 local XK_k = 0x6b
 local XK_ESCAPE = 0xff1b
+
+-- readdir via ffi: io.popen("ls /proc") on every sample blocked the main loop
+local ok_ffi, ffi = pcall(require, "ffi")
+if ok_ffi then
+	-- TODO: errors redefine dirent
+	-- ffi.cdef[[
+	-- 	typedef struct DIR DIR;
+	-- 	typedef struct dirent {
+	-- 		unsigned long long d_ino;
+	-- 		long long d_off;
+	-- 		unsigned short d_reclen;
+	-- 		unsigned char d_type;
+	-- 		char d_name[256];
+	-- 	} dirent;
+	-- 	DIR *opendir(const char *);
+	-- 	dirent *readdir(DIR *);
+	-- 	int closedir(DIR *);
+	-- ]]
+end
 
 local function read_cpu_stat()
 	local f = io.open("/proc/stat", "r")
@@ -62,8 +82,48 @@ local function read_mem()
 	return m
 end
 
+local function read_load_uptime()
+	local f = io.open("/proc/loadavg", "r")
+	if f then
+		local line = f:read("*l")
+		f:close()
+		local a, b, c = line:match("([%d%.]+)%s+([%d%.]+)%s+([%d%.]+)")
+		if a then
+			M.cur_load = string.format("%.2f %.2f %.2f", tonumber(a), tonumber(b) or 0, tonumber(c) or 0)
+		end
+	end
+	f = io.open("/proc/uptime", "r")
+	if f then
+		local line = f:read("*l")
+		f:close()
+		local sec = tonumber(line:match("([%d%.]+)")) or 0
+		local h = math.floor(sec / 3600)
+		local m = math.floor((sec % 3600) / 60)
+		M.cur_up = h >= 24
+			and I.t("%dd %dh", math.floor(h / 24), h % 24)
+			or I.t("%dh %dm", h, m)
+	end
+end
+
 local function list_pids()
 	local pids = {}
+	if ok_ffi then
+		local d = ffi.C.opendir("/proc")
+		if d ~= nil then
+			while true do
+				local e = ffi.C.readdir(d)
+				if e == nil then
+					break
+				end
+				local pid = tonumber(ffi.string(e.d_name))
+				if pid then
+					pids[#pids + 1] = pid
+				end
+			end
+			ffi.C.closedir(d)
+		end
+		return pids
+	end
 	local p = io.popen("ls -1 /proc 2>/dev/null")
 	if not p then
 		return pids
@@ -178,6 +238,7 @@ function M:sample()
 	end
 	M.prev_cpu = cur
 	M.cur_mem = read_mem()
+	read_load_uptime()
 end
 
 function M:apply_filter()
@@ -221,7 +282,7 @@ local function compute_layout(lh, ncores_display, scr_h, user_size)
 	L.FOOTER_H = lh + 16
 	L.CPU_H = L.ROW_H + L.SPARK_H + 12
 	L.CORES_H = ncores_display * L.CORE_H + 12
-	L.MEM_H = L.ROW_H * 2 + 12
+	L.MEM_H = L.ROW_H * 4 + 12
 	L.PHDR_H = L.ROW_H
 
 	local want_h = math.min(math.floor(scr_h * 0.82), 880)
@@ -270,7 +331,17 @@ local function do_draw(p)
 	local ui = p.ui
 	local T = ctx.theme
 	local lh, PAD = p.ctx.get_line_height(), m.PAD
+	-- self-heal on resize: follow the live surface, re-derive list height
+	-- and visible rows so the view bottom/footer always match p.w/p.h
+	m.W, m.H = p.w, p.h
 	local W, H = m.W, m.H
+	local fixed = m.HEADER_H + m.CPU_H + m.CORES_H + m.MEM_H + m.PHDR_H + m.FOOTER_H + 30
+	local list_h = H - fixed
+	if list_h < m.ROW_H * 4 then
+		list_h = m.ROW_H * 4
+	end
+	m.VISIBLE_ROWS = math.max(4, math.floor(list_h / m.ROW_H))
+	M.VISIBLE_ROWS = m.VISIBLE_ROWS
 	local inner_w = W - PAD * 2
 	local LABEL_W, PCT_W = m.LABEL_W, m.PCT_W
 	local bar_x = PAD + LABEL_W
@@ -284,11 +355,11 @@ local function do_draw(p)
 		end
 	end
 
-	local hh = p:draw_header("System Monitor", Util.keybind_hint(ctx, "toggle_sysmon"), PAD)
+	local hh = p:draw_header(I.t("System Monitor"), Util.keybind_hint(ctx, "toggle_sysmon"), PAD)
 	local hint = Util.keybind_hint(ctx, "toggle_sysmon")
 	local hw = select(1, ctx.get_text_size(hint))
 	local hint_x = p.rect_close.x - 12 - hw
-	local search_x = PAD + select(1, ctx.get_text_size("System Monitor")) + 20
+	local search_x = PAD + select(1, ctx.get_text_size(I.t("System Monitor"))) + 20
 	local search_w = hint_x - 12 - search_x
 	local search_h = lh + 4
 	local search_y = math.floor((hh - search_h) / 2)
@@ -300,7 +371,7 @@ local function do_draw(p)
 	local y = m.HEADER_H + 12
 
 	local pct = M.cur_cpu_agg or 0
-	p:text(PAD, y, "CPU", T.on_var)
+	p:text(PAD, y, I.t("CPU"), T.on_var)
 	draw_bar(bar_x, y + math.floor((lh - m.BAR_H) / 2), bar_w, m.BAR_H, pct, load_color(T, pct))
 	p:text(W - PAD - PCT_W, y, string.format("%6.1f%%", pct), T.on_surface)
 	y = y + m.ROW_H
@@ -337,7 +408,7 @@ local function do_draw(p)
 	local mem_used = mem_total - mem_avail
 	local mem_pct = mem_used / mem_total * 100
 
-	p:text(PAD, y, "mem", T.on_var)
+	p:text(PAD, y, I.t("mem"), T.on_var)
 	draw_bar(bar_x, y + math.floor((lh - m.BAR_H) / 2), bar_w, m.BAR_H, mem_pct, load_color(T, mem_pct))
 	local mem_str = string.format("%s/%s %3.0f%%", fmt_bytes_kb(mem_used), fmt_bytes_kb(mem_total), mem_pct)
 	local mw = select(1, ctx.get_text_size(mem_str))
@@ -348,13 +419,25 @@ local function do_draw(p)
 	local swp_free = mem.SwapFree or 0
 	local swp_used = swp_total - swp_free
 	local swp_pct = swp_total > 0 and (swp_used / swp_total * 100) or 0
-	p:text(PAD, y, "swap", T.on_var)
+	p:text(PAD, y, I.t("swap"), T.on_var)
 	draw_bar(bar_x, y + math.floor((lh - m.BAR_H) / 2), bar_w, m.BAR_H, swp_pct, load_color(T, swp_pct))
 	local swp_str = swp_total > 0
 			and string.format("%s/%s %3.0f%%", fmt_bytes_kb(swp_used), fmt_bytes_kb(swp_total), swp_pct)
 		or "--"
 	local sw = select(1, ctx.get_text_size(swp_str))
 	p:text(W - PAD - sw, y, swp_str, T.on_surface)
+	y = y + m.ROW_H
+
+	local load_str = M.cur_load or "--"
+	p:text(PAD, y, I.t("load"), T.on_var)
+	local lw = select(1, ctx.get_text_size(load_str))
+	p:text(W - PAD - lw, y, load_str, T.on_surface)
+	y = y + m.ROW_H
+
+	local up_str = I.t("up %s", M.cur_up or "--")
+	p:text(PAD, y, I.t("uptime"), T.on_var)
+	local uw = select(1, ctx.get_text_size(up_str))
+	p:text(W - PAD - uw, y, up_str, T.on_surface)
 	y = y + m.ROW_H + 10
 	p:rect(PAD, y, inner_w, 1, T.outline)
 	y = y + 10
@@ -372,12 +455,13 @@ local function do_draw(p)
 	end
 	local pid_x = PAD
 	local name_x = pid_x + pid_max + 26
-	local cpu_x = PAD + 440
-	local mem_x = PAD + 520
-	p:text(pid_x, y, "PID", T.hint)
-	p:text(name_x, y, "NAME", T.hint)
-	p:text(cpu_x, y, "CPU%", T.hint)
-	p:text(mem_x, y, "MEM%", T.hint)
+	-- clamp the cpu/mem columns so narrow (user-resized) panels never overflow
+	local cpu_x = math.min(PAD + 440, W - PAD - 240)
+	local mem_x = cpu_x + 80
+	p:text(pid_x, y, I.t("PID"), T.hint)
+	p:text(name_x, y, I.t("NAME"), T.hint)
+	p:text(cpu_x, y, I.t("CPU%"), T.hint)
+	p:text(mem_x, y, I.t("MEM%"), T.hint)
 
 	m.rect_list.x = PAD
 	m.rect_list.y = y + m.ROW_H
@@ -436,7 +520,7 @@ local function do_draw(p)
 		if #nm > 24 then
 			nm = nm:sub(1, 24) .. "…"
 		end
-		local q = string.format("kill %d %s?", M.pending.pid, nm)
+		local q = I.t("kill %d %s?", M.pending.pid, nm)
 		local q_max = inner_w - 2 * 76 - 12 - 24
 		while #q > 4 and select(1, ctx.get_text_size(q)) > q_max do
 			q = q:sub(1, -2)
@@ -445,10 +529,10 @@ local function do_draw(p)
 		local bw = 76
 		local bh = lh + 6
 		local byy = H - m.FOOTER_H + math.floor((m.FOOTER_H - bh) / 2)
-		if ui:id_button("sm_cancel", W - PAD - 2 * bw - 12, byy, bw, bh, "cancel", { tonal = true }) then
+		if ui:id_button("sm_cancel", W - PAD - 2 * bw - 12, byy, bw, bh, I.t("cancel"), { tonal = true }) then
 			M.pending = nil
 		end
-		if ui:id_button("sm_kill", W - PAD - bw, byy, bw, bh, "kill", { filled = true, color = T.crit }) then
+		if ui:id_button("sm_kill", W - PAD - bw, byy, bw, bh, I.t("kill"), { filled = true, color = T.crit }) then
 			M:do_kill()
 		end
 		return
@@ -456,8 +540,8 @@ local function do_draw(p)
 	local total = #M.procs
 	local shown = #M.filtered
 	local status = (shown < total)
-			and string.format("filter %d / %d · ctrl+f search · ctrl+k kill", shown, total)
-		or string.format("%d processes · ctrl+f search · ctrl+k kill", total)
+			and I.t("filter %d / %d · ctrl+f search · ctrl+k kill", shown, total)
+		or I.t("%d processes · ctrl+f search · ctrl+k kill", total)
 	p:text(PAD, by + 4, status, T.hint)
 end
 
@@ -484,7 +568,7 @@ function M.init(ctx)
 		end,
 		draw = do_draw,
 		input = {
-			placeholder = "ctrl+f search process or pid",
+			placeholder = I.t("ctrl+f search process or pid"),
 			on_change = function(v)
 				M.search_query = v
 				M:apply_filter()
@@ -579,6 +663,8 @@ function M.init(ctx)
 	M.cur_cpu_agg = 0
 	M.cur_cores = {}
 	M.cur_mem = nil
+	M.cur_load = "--"
+	M.cur_up = "--"
 	M.procs = {}
 	M.filtered = {}
 	M.history = {}
@@ -589,6 +675,7 @@ function M.init(ctx)
 	M.pending = nil
 	M.search_query = ""
 	M.refresh_acc = 0
+	M._fit_cores = M.ncores_display
 
 	M.prev_cpu = read_cpu_stat()
 	for _, pid in ipairs(list_pids()) do
@@ -601,13 +688,13 @@ function M.init(ctx)
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size("mon")) + 20
+	return select(1, ctx.get_text_size(I.t("mon"))) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)
 	local lh = ctx.get_line_height()
 	local active = ctx.active_plugin_name == "sysmon" and ctx.popup_visible
-	s:text(x + 10, math.floor((h - lh) / 2), "mon", active and ctx.theme.primary or ctx.theme.on_surface)
+	s:text(x + 10, math.floor((h - lh) / 2), I.t("mon"), active and ctx.theme.primary or ctx.theme.on_surface)
 end
 
 function M.on_click(ctx, btn, lx, ly, gx, gw)
@@ -629,7 +716,7 @@ function M:do_kill()
 		return
 	end
 	os.execute("kill -TERM " .. pid .. " 2>/dev/null")
-	M.ctx.notify(string.format("SIGTERM sent to pid %d", pid), { style = "warning", duration = 2000 })
+	M.ctx.notify(I.t("SIGTERM sent to pid %d", pid), { style = "warning", duration = 2000 })
 	M.pending = nil
 	M.selected_pid = nil
 	M:sample()
@@ -643,6 +730,12 @@ function M.tick(ctx, dt)
 	if M.refresh_acc >= REFRESH_MS then
 		M.refresh_acc = 0
 		M:sample()
+		-- auto-fit when a content-driven size input changed (core count is
+		-- the only data-dependent term in size_fn); fit() no-ops if unchanged
+		if M.ncores_display ~= M._fit_cores then
+			M._fit_cores = M.ncores_display
+			M.panel:fit()
+		end
 		if M.panel.visible then
 			M.panel:draw()
 		end
