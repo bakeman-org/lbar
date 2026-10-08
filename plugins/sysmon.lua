@@ -19,19 +19,19 @@ local XK_ESCAPE = 0xff1b
 local ok_ffi, ffi = pcall(require, "ffi")
 if ok_ffi then
 	-- TODO: errors redefine dirent
-	-- ffi.cdef[[
-	-- 	typedef struct DIR DIR;
-	-- 	typedef struct dirent {
-	-- 		unsigned long long d_ino;
-	-- 		long long d_off;
-	-- 		unsigned short d_reclen;
-	-- 		unsigned char d_type;
-	-- 		char d_name[256];
-	-- 	} dirent;
-	-- 	DIR *opendir(const char *);
-	-- 	dirent *readdir(DIR *);
-	-- 	int closedir(DIR *);
-	-- ]]
+	ffi.cdef[[
+		typedef struct DIR DIR;
+		typedef struct dirent {
+			unsigned long long d_ino;
+			long long d_off;
+			unsigned short d_reclen;
+			unsigned char d_type;
+			char d_name[256];
+		} dirent;
+		DIR *opendir(const char *);
+		dirent *readdir(DIR *);
+		int closedir(DIR *);
+	]]
 end
 
 local function read_cpu_stat()

@@ -1,12 +1,37 @@
 #!/usr/bin/env luajit
-local SCRIPT_DIR = (arg[0] or "lbar.lua"):match("^(.*)/[^/]*$") or "."
-if SCRIPT_DIR == "" then
-	SCRIPT_DIR = "."
+local function dir_of(p)
+	local d = (p or ""):match("^(.*)/[^/]*$")
+	if not d or d == "" then
+		d = "."
+	end
+	return d
 end
-if SCRIPT_DIR:sub(1, 1) ~= "/" then
-	local pwd = os.getenv("PWD")
-	if pwd and pwd:sub(1, 1) == "/" and pwd ~= "" then
-		SCRIPT_DIR = pwd:gsub("/$", "") .. "/" .. SCRIPT_DIR
+
+-- native (luastatic) deploy: the binary ships its lbar.so beside it, so the
+-- executable's real directory wins over arg[0]/$PWD (argv[0] and the
+-- build-time chunk name can both lie after copying to another prefix)
+local SCRIPT_DIR = nil
+do
+	local ffi0 = require("ffi")
+	ffi0.cdef("ssize_t readlink(const char *path, char *buf, size_t bufsiz);")
+	local buf = ffi0.new("char[4096]")
+	local n = ffi0.C.readlink("/proc/self/exe", buf, 4095)
+	if n and n > 0 then
+		local d = dir_of(ffi0.string(buf, n))
+		local f = io.open(d .. "/lbar.so", "rb")
+		if f then
+			f:close()
+			SCRIPT_DIR = d
+		end
+	end
+end
+if not SCRIPT_DIR then
+	SCRIPT_DIR = dir_of(arg[0] or "lbar.lua")
+	if SCRIPT_DIR:sub(1, 1) ~= "/" then
+		local pwd = os.getenv("PWD")
+		if pwd and pwd:sub(1, 1) == "/" and pwd ~= "" then
+			SCRIPT_DIR = pwd:gsub("/$", "") .. "/" .. SCRIPT_DIR
+		end
 	end
 end
 package.path = SCRIPT_DIR .. "/?.lua;" .. package.path

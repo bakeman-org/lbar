@@ -46,6 +46,12 @@ function M.new(ctx)
 
 	function self.register_wm_binds(config)
 		local cli = (ctx.lbar_dir or ".") .. "/lbar-cli"
+		local f = io.open(cli, "rb")
+		if not f then
+			log("WARNING: %s missing — compositor keybinds will spawn nothing; deploy lbar-cli next to the binary", cli)
+		else
+			f:close()
+		end
 		local wms = { "core.wm.hyprland", "core.wm.sway", "core.wm.niri" }
 		for _, wmname in ipairs(wms) do
 			local wm = require(wmname)
