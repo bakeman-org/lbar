@@ -14,7 +14,7 @@ return {
     theme_mode  = 'dark',
 
     font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-    font_size = 24,
+    font_size = 18,
     fallback_font_paths = {
         '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
     },
@@ -25,7 +25,7 @@ return {
     music_state_file = os.getenv('HOME') .. '/.local/state/lbar/music.conf',
 
     plugins = {
-        'menu', 'cpu', 'mem', 'battery', 'clock', 'system',
+        'logo', 'cpu', 'mem', 'battery', 'clock', 'system',
         'keybinds_help', 'launcher', 'clip_hist', 'pomodoro',
         'music_player', 'weather', 'sysinfo', 'sysmon',
         'color_picker', 'ui_demo', 'hide_all',
@@ -39,7 +39,7 @@ return {
         sysmon = { dismiss_outside = false },
         music_player = { dismiss_outside = false },
         color_picker = { dismiss_outside = false },
-
+        sysinfo = { dismiss_outside = false },
     },
 
     -- same keybinds as xpet

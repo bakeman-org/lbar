@@ -65,6 +65,8 @@ function M.new(ctx, opts)
 	else
 		self.w, self.h = opts.w or 100, opts.h or 100
 	end
+	self.w = math.max(1, self.w or 1)
+	self.h = math.max(1, self.h or 1)
 
 	local rc = ctx.L.lbar_popup_create(ctx.Lctx, self.w, self.h, self.radius)
 	if rc < 0 then
@@ -104,6 +106,8 @@ function Panel:refit()
 end
 
 function Panel:resize(w, h)
+	w = math.max(1, math.floor(w))
+	h = math.max(1, math.floor(h))
 	if self.visible or (w == self.w and h == self.h) then
 		return false
 	end
@@ -358,6 +362,11 @@ end
 function Panel:_begin_show()
 	local ctx = self.ctx
 	local L = ctx.L
+	local max_w = ctx.scr_w - 16
+	local max_h = ctx.scr_h - 16
+	if self.w > max_w or self.h > max_h then
+		self:resize(math.min(self.w, max_w), math.min(self.h, max_h))
+	end
 	if ctx._panel_closing and ctx._panel_closing ~= self then
 		ctx._panel_closing:_finish_hide()
 	end
@@ -493,11 +502,21 @@ function Panel:tick(dt)
 end
 
 function Panel:draw()
+	if self.destroyed or not self.surf then
+		return
+	end
 	if self._drawing then
 		return
 	end
 	self._drawing = true
 	local L = self.ctx.L
+	local cw, ch = ffi.new("int[1]"), ffi.new("int[1]")
+	L.lbar_popup_size(self.ctx.Lctx, self.id, cw, ch)
+	if cw[0] > 0 and ch[0] > 0 and (cw[0] ~= self.w or ch[0] ~= self.h) then
+		self.w, self.h = cw[0], ch[0]
+		self.surf = ffi.new("uint32_t[?]", self.w * self.h)
+		self.mx, self.my = -1, -1
+	end
 	L.surf_fill(self.surf, self.w, self.h, 0, 0, self.w, self.h, self.bg)
 	if self.ui then
 		self.ui:begin(self)
@@ -511,7 +530,11 @@ function Panel:draw()
 	if self.ui then
 		self.ui:finish()
 	end
-	L.lbar_popup_flush(self.ctx.Lctx, self.id, self.surf)
+	L.lbar_popup_flush(self.ctx.Lctx, self.id, self.surf, self.w, self.h, cw, ch)
+	if cw[0] > 0 and ch[0] > 0 and (cw[0] ~= self.w or ch[0] ~= self.h) then
+		self.w, self.h = cw[0], ch[0]
+		self.surf = ffi.new("uint32_t[?]", self.w * self.h)
+	end
 	self._drawing = false
 end
 
@@ -541,6 +564,9 @@ function Panel:on_motion(mx, my, rx, ry)
 end
 
 function Panel:on_press(btn, mx, my, rx, ry)
+	if self.destroyed then
+		return false
+	end
 	self.mx, self.my = mx, my
 	if self.ui and btn == 1 then
 		self.ui:press(mx, my)
@@ -559,6 +585,9 @@ function Panel:on_press(btn, mx, my, rx, ry)
 end
 
 function Panel:on_release(btn, mx, my, rx, ry)
+	if self.destroyed then
+		return false
+	end
 	self.mx, self.my = mx, my
 	if self.ui and btn == 1 then
 		self.ui:release(mx, my)
@@ -606,6 +635,7 @@ function Panel:destroy()
 	if self.visible then
 		self:hide(true)
 	end
+	self.destroyed = true
 	self.surf = nil
 end
 

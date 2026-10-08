@@ -1,6 +1,6 @@
 MAKEFLAGS += -B
 CC      ?= cc
-PKGS    := freetype2 harfbuzz x11 xext wayland-client
+PKGS    := freetype2 harfbuzz x11 xext wayland-client xkbcommon
 CFLAGS  := -O2 -fPIC -Wall -Wextra -Wno-unused-parameter \
            $(shell pkg-config --cflags $(PKGS))
 LDFLAGS := -shared

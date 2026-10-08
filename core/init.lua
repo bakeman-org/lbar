@@ -31,7 +31,9 @@ return function(SCRIPT_DIR)
     void lbar_popup_show(lbar_ctx *c, int id);
     void lbar_popup_hide(lbar_ctx *c, int id);
     int  lbar_popup_visible(lbar_ctx *c);
-    void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels);
+    void lbar_popup_size(lbar_ctx *c, int id, int *out_w, int *out_h);
+    void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels, int sw,
+                          int sh, int *out_w, int *out_h);
 
     int lbar_key_code(lbar_ctx *c, const char *name);
     int lbar_key_grab(lbar_ctx *c, int code, int mask);

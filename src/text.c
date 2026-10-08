@@ -227,11 +227,13 @@ static inline void blend(uint32_t *dst, uint8_t r, uint8_t g, uint8_t b,
   uint8_t er = (e >> 16) & 0xFF;
   uint8_t eg = (e >> 8) & 0xFF;
   uint8_t eb = e & 0xFF;
+  uint8_t ea = (uint8_t)(e >> 24);
   uint16_t inv = 255 - a;
   uint8_t nr = (uint8_t)((r * a + er * inv) / 255);
   uint8_t ng = (uint8_t)((g * a + eg * inv) / 255);
   uint8_t nb = (uint8_t)((b * a + eb * inv) / 255);
-  *dst = ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | nb;
+  uint8_t na = (uint8_t)(a + (uint32_t)ea * inv / 255);
+  *dst = ((uint32_t)na << 24) | ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | nb;
 }
 
 static void rasterize_glyph(uint32_t *img_buf, int img_w, int img_h,
@@ -313,11 +315,14 @@ static void rasterize_glyph(uint32_t *img_buf, int img_w, int img_h,
         uint8_t er = (e >> 16) & 0xFF;
         uint8_t eg = (e >> 8) & 0xFF;
         uint8_t eb = e & 0xFF;
+        uint8_t ea = (uint8_t)(e >> 24);
         uint16_t inv = 255 - a;
         uint8_t nr = (uint8_t)((r * a + er * inv) / 255);
         uint8_t ng = (uint8_t)((g * a + eg * inv) / 255);
         uint8_t nb = (uint8_t)((b * a + eb * inv) / 255);
-        dst_row[px] = ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | nb;
+        uint8_t na = (uint8_t)(a + (uint32_t)ea * inv / 255);
+        dst_row[px] =
+            ((uint32_t)na << 24) | ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | nb;
       } else {
         uint8_t a = bm->buffer[sy * bm->pitch + sx];
         if (a == 0)
@@ -446,17 +451,19 @@ static inline void blend_px(uint32_t *dst, uint32_t srgb, uint8_t a) {
   if (a == 0)
     return;
   if (a == 255) {
-    *dst = srgb & 0xFFFFFF;
+    *dst = (srgb & 0xFFFFFF) | 0xFF000000;
     return;
   }
   uint32_t d = *dst;
   uint16_t inv = 255 - a;
+  uint8_t da = (uint8_t)(d >> 24);
   uint8_t dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
   uint8_t sr = (srgb >> 16) & 0xFF, sg = (srgb >> 8) & 0xFF, sb = srgb & 0xFF;
   uint8_t nr = (uint8_t)((sr * a + dr * inv) / 255);
   uint8_t ng = (uint8_t)((sg * a + dg * inv) / 255);
   uint8_t nb = (uint8_t)((sb * a + db * inv) / 255);
-  *dst = ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | nb;
+  uint8_t na = (uint8_t)(a + (uint32_t)da * inv / 255);
+  *dst = ((uint32_t)na << 24) | ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | nb;
 }
 
 void surf_fill(uint32_t *buf, int W, int H, int x, int y, int w, int h,
@@ -475,7 +482,7 @@ void surf_fill(uint32_t *buf, int W, int H, int x, int y, int w, int h,
     h = H - y;
   if (w <= 0 || h <= 0)
     return;
-  uint32_t c = color & 0xFFFFFF;
+  uint32_t c = color | 0xFF000000;
   for (int i = 0; i < h; i++) {
     uint32_t *row = buf + (size_t)(y + i) * W + x;
     for (int j = 0; j < w; j++)

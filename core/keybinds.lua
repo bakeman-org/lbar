@@ -44,54 +44,21 @@ function M.new(ctx)
 	local by_code = {}
 	local self = {}
 
-	local function hypr_eval(code)
-		local quoted = code:gsub("'", "'\\''")
-		local p = io.popen("hyprctl eval '" .. quoted .. "' 2>&1", "r")
-		if not p then
-			return nil, "popen failed"
-		end
-		local out = p:read("*a") or ""
-		p:close()
-		return out:find("^ok") ~= nil, out
-	end
-
 	function self.register_wm_binds(config)
 		local cli = (ctx.lbar_dir or ".") .. "/lbar-cli"
-		local hypr = os.getenv("HYPRLAND_INSTANCE_SIGNATURE")
-		local sway = os.getenv("SWAYSOCK")
-		local n = 0
-		for _, kb in ipairs(config or {}) do
-			local mods = kb.mod or ""
-			local ok, out
-			if hypr then
-				local parts = {}
-				for m in mods:gmatch("[^+%s]+") do
-					parts[#parts + 1] = m:upper()
+		local wms = { "core.wm.hyprland", "core.wm.sway", "core.wm.niri" }
+		for _, wmname in ipairs(wms) do
+			local wm = require(wmname)
+			if wm.detect() then
+				local n = wm.register_binds(ctx, config, cli, log)
+				if n > 0 then
+					log("registered %d %s keybinds", n, wm.name)
 				end
-				parts[#parts + 1] = kb.key
-				local keys = table.concat(parts, " + ")
-				ok, out = hypr_eval(string.format(
-					'pcall(function() hl.unbind("%s") end) hl.bind("%s", hl.dsp.exec_cmd("%s %s"))',
-					keys, keys, cli, kb.action))
-			elseif sway then
-				ok = os.execute(string.format(
-					"swaymsg bindsym '%s+%s' exec '%s %s' >/dev/null 2>&1",
-					mods, kb.key, cli, kb.action))
-			else
-				log("no compositor binds on %s (bind wm keys to: %s <action>)",
-					tostring(ctx.backend_kind), cli)
 				return
 			end
-			if ok then
-				n = n + 1
-			else
-				log("wm bind failed: %s+%s -> %s (%s)", tostring(kb.mod), tostring(kb.key),
-					tostring(kb.action), (tostring(out):gsub("%s+$", "")))
-			end
 		end
-		if n > 0 then
-			log("registered %d compositor keybinds", n)
-		end
+		log("no compositor binds on %s (bind wm keys to: %s <action>)",
+			tostring(ctx.backend_kind), cli)
 	end
 
 	function self.build(config)

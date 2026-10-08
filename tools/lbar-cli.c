@@ -20,7 +20,11 @@ int main(int argc, char **argv) {
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+  size_t plen = strlen(path);
+  if (plen >= sizeof(addr.sun_path))
+    plen = sizeof(addr.sun_path) - 1;
+  memcpy(addr.sun_path, path, plen);
+  addr.sun_path[plen] = 0;
   if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
     fprintf(stderr, "lbar-cli: cannot connect to %s (is lbar running?)\n",
             path);

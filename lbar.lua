@@ -3,6 +3,12 @@ local SCRIPT_DIR = (arg[0] or "lbar.lua"):match("^(.*)/[^/]*$") or "."
 if SCRIPT_DIR == "" then
 	SCRIPT_DIR = "."
 end
+if SCRIPT_DIR:sub(1, 1) ~= "/" then
+	local pwd = os.getenv("PWD")
+	if pwd and pwd:sub(1, 1) == "/" and pwd ~= "" then
+		SCRIPT_DIR = pwd:gsub("/$", "") .. "/" .. SCRIPT_DIR
+	end
+end
 package.path = SCRIPT_DIR .. "/?.lua;" .. package.path
 package.cpath = SCRIPT_DIR .. "/?.so;" .. package.cpath
 
@@ -258,7 +264,12 @@ local function reload_all()
 	end
 
 	L.lbar_close(Lctx)
-	Lctx = L.lbar_open()
+	local newL = L.lbar_open()
+	if not newL then
+		log("reopen failed after reload, exiting")
+		os.exit(1)
+	end
+	Lctx = newL
 	ctx.Lctx = Lctx
 	ctx.scr_w = L.lbar_screen_w(Lctx)
 	ctx.scr_h = L.lbar_screen_h(Lctx)
@@ -452,21 +463,15 @@ while true do
 		local t = ev.type
 		local tgt = ev.target
 		if t == 4 then
-				if tgt == 0 then
-					bar.needs_redraw = true
-				-- elseif ev.btn > 0 then
-				-- 	for _, p in pairs(ctx._panels or {}) do
-				-- 		if p.id == ev.btn and p.visible then
-				-- 			p:draw()
-				-- 		end
-				-- 	end
-				else
-					local vis = L.lbar_popup_visible(Lctx) ~= 0
-					ctx.popup_visible = vis
-					if vis then
-						if ctx.active_panel then
-							ctx.active_panel:draw()
-						end
+			if tgt == 0 then
+				bar.needs_redraw = true
+			else
+				local vis = L.lbar_popup_visible(Lctx) ~= 0
+				ctx.popup_visible = vis
+				if vis then
+					if ctx.active_panel then
+						ctx.active_panel:draw()
+					end
 				else
 					for _, p in pairs(panels) do
 						p.visible = false
@@ -480,7 +485,10 @@ while true do
 			if tgt == 1 then
 				local p = visible_panel()
 				if p then
-					p:on_motion(ev.x, ev.y, ev.root_x, ev.root_y)
+					local ok, perr = pcall(p.on_motion, p, ev.x, ev.y, ev.root_x, ev.root_y)
+					if not ok then
+						log("panel motion error: %s", tostring(perr))
+					end
 				end
 			else
 				bar:on_motion(ev.x, ev.y)
@@ -493,7 +501,10 @@ while true do
 						and p.opts.ptr_grab ~= false then
 						p:hide()
 					else
-						p:on_press(ev.button, ev.x, ev.y, ev.root_x, ev.root_y)
+						local ok, perr = pcall(p.on_press, p, ev.button, ev.x, ev.y, ev.root_x, ev.root_y)
+						if not ok then
+							log("panel press error: %s", tostring(perr))
+						end
 					end
 				end
 			else
@@ -503,13 +514,19 @@ while true do
 			if tgt == 1 then
 				local p = visible_panel()
 				if p then
-					p:on_release(ev.button, ev.x, ev.y, ev.root_x, ev.root_y)
+					local ok, perr = pcall(p.on_release, p, ev.button, ev.x, ev.y, ev.root_x, ev.root_y)
+					if not ok then
+						log("panel release error: %s", tostring(perr))
+					end
 				end
 			end
 		elseif t == 5 then
 			if tgt == 1 then
 				if ctx.active_panel and ctx.active_panel.kbd then
-					ctx.active_panel:on_key(ev.keycode, ev.keystate)
+					local ok, perr = pcall(ctx.active_panel.on_key, ctx.active_panel, ev.keycode, ev.keystate)
+					if not ok then
+						log("panel key error: %s", tostring(perr))
+					end
 				end
 			else
 				local action = keybinds.lookup(ev.keycode, ev.keystate)

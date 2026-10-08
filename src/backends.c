@@ -20,6 +20,7 @@
 #include <X11/extensions/shape.h>
 
 #include <wayland-client.h>
+#include <xkbcommon/xkbcommon.h>
 
 static void lbar_log(const char *level, const char *fmt, ...) {
   va_list ap;
@@ -213,6 +214,10 @@ typedef struct lbar_ctx {
   struct wl_shm *wl_shm;
   struct wl_seat *wl_seat;
   struct wl_pointer *wl_ptr;
+  struct wl_keyboard *wl_kbd;
+  struct xkb_context *xkb_ctx;
+  struct xkb_keymap *xkb_map;
+  struct xkb_state *xkb_st;
   struct wl_output *wl_out;
   struct zwlr_layer_shell_v1 *wl_shell;
 
@@ -306,7 +311,11 @@ static void ipc_init(lbar_ctx *c) {
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, c->ipc_path, sizeof(addr.sun_path) - 1);
+  size_t plen = strlen(c->ipc_path);
+  if (plen >= sizeof(addr.sun_path))
+    plen = sizeof(addr.sun_path) - 1;
+  memcpy(addr.sun_path, c->ipc_path, plen);
+  addr.sun_path[plen] = 0;
   if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
       listen(fd, 4) != 0) {
     LOG_WARN("ipc bind failed: %s", c->ipc_path);
@@ -698,7 +707,8 @@ static void pop_configure(void *data, struct zwlr_layer_surface_v1 *ls,
     nw = p->w;
   if (nh <= 0)
     nh = p->h;
-  if (nw != p->w || nh != p->h) {
+  int changed = (nw != p->w || nh != p->h);
+  if (changed) {
     LOG_INFO("popup configure -> %dx%d", nw, nh);
     p->w = nw;
     p->h = nh;
@@ -706,7 +716,7 @@ static void pop_configure(void *data, struct zwlr_layer_surface_v1 *ls,
   }
   int first = !p->configured;
   p->configured = 1;
-  if (first && p->flush_pending) {
+  if (first || changed) {
     p->flush_pending = 0;
     ev_push(c, 4, 0, 0, 0, 0, (int)(p - c->popups), 1, 0, 0);
   }
@@ -716,6 +726,98 @@ static void pop_closed(void *data, struct zwlr_layer_surface_v1 *ls) {
   (void)ls;
   LOG_WARN("popup layer closed");
 }
+
+static void kbd_keymap(void *data, struct wl_keyboard *kbd, uint32_t format,
+                       int32_t fd, uint32_t size) {
+  lbar_ctx *c = data;
+  (void)kbd;
+  if (format != 1 || size == 0) {
+    close(fd);
+    return;
+  }
+  char *map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+  close(fd);
+  if (map == MAP_FAILED)
+    return;
+  if (!c->xkb_ctx)
+    c->xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+  if (c->xkb_st) {
+    xkb_state_unref(c->xkb_st);
+    c->xkb_st = NULL;
+  }
+  if (c->xkb_map)
+    xkb_keymap_unref(c->xkb_map);
+  c->xkb_map = xkb_keymap_new_from_string(
+      c->xkb_ctx, map, XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+  c->xkb_st = c->xkb_map ? xkb_state_new(c->xkb_map) : NULL;
+  munmap(map, size);
+  LOG_INFO("wl keyboard map %s", c->xkb_st ? "loaded" : "FAILED");
+}
+static void kbd_enter(void *data, struct wl_keyboard *kbd, uint32_t serial,
+                      struct wl_surface *surf, struct wl_array *keys) {
+  (void)data;
+  (void)kbd;
+  (void)serial;
+  (void)surf;
+  (void)keys;
+}
+static void kbd_leave(void *data, struct wl_keyboard *kbd, uint32_t serial,
+                      struct wl_surface *surf) {
+  (void)data;
+  (void)kbd;
+  (void)serial;
+  (void)surf;
+}
+static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
+                    uint32_t t, uint32_t key, uint32_t state) {
+  lbar_ctx *c = data;
+  (void)kbd;
+  (void)serial;
+  (void)t;
+  if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !c->xkb_st)
+    return;
+  uint32_t mods =
+      xkb_state_serialize_mods(c->xkb_st, XKB_STATE_MODS_DEPRESSED);
+  ev_push(c, 5, 0, 0, 0, 0, 0, 1, (int)key + 8, (int)mods);
+}
+static void kbd_modifiers(void *data, struct wl_keyboard *kbd, uint32_t serial,
+                          uint32_t dep, uint32_t lat, uint32_t loc,
+                          uint32_t group) {
+  lbar_ctx *c = data;
+  (void)kbd;
+  (void)serial;
+  if (c->xkb_st)
+    xkb_state_update_mask(c->xkb_st, dep, lat, loc, 0, 0, group);
+}
+static void kbd_repeat(void *data, struct wl_keyboard *kbd, int32_t rate,
+                       int32_t delay) {
+  (void)data;
+  (void)kbd;
+  (void)rate;
+  (void)delay;
+}
+static const struct wl_keyboard_listener kbd_listener = {
+    kbd_keymap, kbd_enter,  kbd_leave,
+    kbd_key,    kbd_modifiers, kbd_repeat,
+};
+
+static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps) {
+  lbar_ctx *c = data;
+  if ((caps & WL_SEAT_CAPABILITY_POINTER) && !c->wl_ptr) {
+    c->wl_ptr = wl_seat_get_pointer(seat);
+    wl_pointer_add_listener(c->wl_ptr, &pointer_listener, c);
+  }
+  if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !c->wl_kbd) {
+    c->wl_kbd = wl_seat_get_keyboard(seat);
+    wl_keyboard_add_listener(c->wl_kbd, &kbd_listener, c);
+  }
+}
+static void seat_name(void *data, struct wl_seat *seat, const char *name) {
+  (void)data;
+  (void)seat;
+  (void)name;
+}
+static const struct wl_seat_listener seat_listener = {seat_caps, seat_name};
 
 static int wl_open(lbar_ctx *c) {
   c->wl_dpy = wl_display_connect(NULL);
@@ -734,9 +836,7 @@ static int wl_open(lbar_ctx *c) {
   }
 
   if (c->have_seat) {
-    c->wl_ptr = wl_seat_get_pointer(c->wl_seat);
-    if (c->wl_ptr)
-      wl_pointer_add_listener(c->wl_ptr, &pointer_listener, c);
+    wl_seat_add_listener(c->wl_seat, &seat_listener, c);
   }
   wl_display_roundtrip(c->wl_dpy);
   LOG_INFO("wayland connected");
@@ -749,6 +849,8 @@ static int wl_create_bar(lbar_ctx *c, int h, int pos, int margin) {
   int bw = c->screen_w - 2 * margin;
   if (bw < 32)
     bw = 32;
+  if (h < 1)
+    h = 1;
   c->bar_pos = pos;
   c->bar_w = bw;
   c->bar_h = h;
@@ -831,23 +933,35 @@ static void wl_popup_set_position(lbar_ctx *c, lbar_popup_t *p, int x, int y) {
   }
 }
 
+static void popup_destroy_slot(lbar_ctx *c, lbar_popup_t *p);
+
 static void wl_popup_show(lbar_ctx *c, lbar_popup_t *p) {
   p->visible = 1;
   p->busy = 0;
-  if (p->surf) {
-    zwlr_ls_set_margin(p->layer, p->y, 0, 0, p->x);
-    wl_surface_commit(p->surf);
+  if (!p->surf || !p->layer) {
+    int x = p->x, y = p->y;
+    if (wl_popup_init(c, p, p->w, p->h, p->r) != 0) {
+      p->visible = 0;
+      return;
+    }
+    wl_popup_set_position(c, p, x, y);
   }
   wl_display_flush(c->wl_dpy);
 }
 
 static void wl_popup_hide(lbar_ctx *c, lbar_popup_t *p) {
   p->visible = 0;
-  if (p->surf) {
-    wl_surface_attach(p->surf, NULL, 0, 0);
-    wl_surface_commit(p->surf);
-  }
+  p->flush_pending = 0;
   p->busy = 0;
+  p->configured = 0;
+  if (p->surf || p->layer || p->buf || p->pool || p->pix) {
+    popup_destroy_slot(c, p);
+    p->surf = NULL;
+    p->layer = NULL;
+    p->buf = NULL;
+    p->pool = NULL;
+    p->pix = NULL;
+  }
   wl_display_flush(c->wl_dpy);
 }
 
@@ -1151,6 +1265,10 @@ static lbar_popup_t *popup_at(lbar_ctx *c, int id) {
 int lbar_popup_create(lbar_ctx *c, int w, int h, int r) {
   if (c->n_popups >= LBAR_POPUP_MAX)
     return -1;
+  if (w < 1)
+    w = 1;
+  if (h < 1)
+    h = 1;
   int id = c->n_popups++;
   lbar_popup_t *p = &c->popups[id];
   memset(p, 0, sizeof(*p));
@@ -1199,8 +1317,15 @@ int lbar_popup_resize(lbar_ctx *c, int id, int w, int h) {
 }
 
 int lbar_kbd_grab(lbar_ctx *c, int id) {
-  if (c->is_wayland)
-    return -1;
+  if (c->is_wayland) {
+    lbar_popup_t *p = popup_at(c, id);
+    if (!p || !p->layer || !p->surf)
+      return -1;
+    zwlr_ls_set_kb(p->layer, 1);
+    wl_surface_commit(p->surf);
+    wl_display_flush(c->wl_dpy);
+    return 0;
+  }
   lbar_popup_t *p = popup_at(c, id);
   if (!p || !p->x_win)
     return -1;
@@ -1211,8 +1336,17 @@ int lbar_kbd_grab(lbar_ctx *c, int id) {
 }
 
 int lbar_kbd_ungrab(lbar_ctx *c) {
-  if (c->is_wayland)
-    return -1;
+  if (c->is_wayland) {
+    for (int i = 0; i < c->n_popups; i++) {
+      lbar_popup_t *p = &c->popups[i];
+      if (p->layer && p->surf) {
+        zwlr_ls_set_kb(p->layer, 0);
+        wl_surface_commit(p->surf);
+      }
+    }
+    wl_display_flush(c->wl_dpy);
+    return 0;
+  }
   XUngrabKeyboard(c->x_dpy, CurrentTime);
   XFlush(c->x_dpy);
   return 0;
@@ -1318,9 +1452,22 @@ int lbar_popup_visible(lbar_ctx *c) {
   return 0;
 }
 
-void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels) {
+void lbar_popup_size(lbar_ctx *c, int id, int *out_w, int *out_h) {
   lbar_popup_t *p = popup_at(c, id);
-  if (!p)
+  if (out_w)
+    *out_w = p ? p->w : 0;
+  if (out_h)
+    *out_h = p ? p->h : 0;
+}
+
+void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels, int sw,
+                      int sh, int *out_w, int *out_h) {
+  lbar_popup_t *p = popup_at(c, id);
+  if (out_w)
+    *out_w = p ? p->w : 0;
+  if (out_h)
+    *out_h = p ? p->h : 0;
+  if (!p || !pixels || sw <= 0 || sh <= 0)
     return;
   if (c->is_wayland) {
     if (!p->visible)
@@ -1341,13 +1488,33 @@ void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels) {
     }
     if (p->busy || !p->buf || !p->surf)
       return;
-    memcpy(p->pix, pixels, (size_t)p->w * p->h * 4);
+    if (out_w)
+      *out_w = p->w;
+    if (out_h)
+      *out_h = p->h;
+    int rows = p->h < sh ? p->h : sh;
+    int cols = p->w < sw ? p->w : sw;
+    for (int y = 0; y < rows; y++) {
+      memcpy(p->pix + (size_t)y * p->w, pixels + (size_t)y * sw,
+             (size_t)cols * 4);
+      if (cols < p->w)
+        memset(p->pix + (size_t)y * p->w + cols, 0,
+               (size_t)(p->w - cols) * 4);
+    }
+    for (int y = rows; y < p->h; y++)
+      memset(p->pix + (size_t)y * p->w, 0, (size_t)p->w * 4);
     wl_surface_attach(p->surf, p->buf, 0, 0);
     wl_surface_damage(p->surf, 0, 0, p->w, p->h);
     wl_surface_commit(p->surf);
     wl_display_flush(c->wl_dpy);
     p->busy = 1;
   } else {
+    if (p->w > sw || p->h > sh)
+      return;
+    if (out_w)
+      *out_w = p->w;
+    if (out_h)
+      *out_h = p->h;
     x_flush_pixels(c, p->x_win, p->x_gc, pixels, p->w, p->h);
   }
 }
@@ -1392,9 +1559,23 @@ int lbar_key_ungrab_all(lbar_ctx *c) {
 
 long lbar_key_lookup(lbar_ctx *c, int keycode, int state, char *out,
                      int out_max) {
-  if (c->is_wayland || !out || out_max <= 0)
+  if (!out || out_max <= 0)
     return 0;
   out[0] = 0;
+  if (c->is_wayland) {
+    if (!c->xkb_st || keycode <= 0)
+      return 0;
+    xkb_keysym_t sym = xkb_state_key_get_one_sym(c->xkb_st,
+                                                 (xkb_keycode_t)keycode);
+    int n = xkb_state_key_get_utf8(c->xkb_st, (xkb_keycode_t)keycode, out,
+                                   out_max);
+    if (n < 0)
+      n = 0;
+    if (n > out_max - 1)
+      n = out_max - 1;
+    out[n] = 0;
+    return (long)sym;
+  }
   XKeyEvent ev;
   memset(&ev, 0, sizeof(ev));
   ev.display = c->x_dpy;
@@ -1535,6 +1716,18 @@ void lbar_close(lbar_ctx *c) {
     c->lock_fd = -1;
   }
   if (c->is_wayland) {
+    if (c->xkb_st) {
+      xkb_state_unref(c->xkb_st);
+      c->xkb_st = NULL;
+    }
+    if (c->xkb_map) {
+      xkb_keymap_unref(c->xkb_map);
+      c->xkb_map = NULL;
+    }
+    if (c->xkb_ctx) {
+      xkb_context_unref(c->xkb_ctx);
+      c->xkb_ctx = NULL;
+    }
     for (int i = 0; i < c->n_popups; i++) {
       lbar_popup_t *p = &c->popups[i];
       if (p->surf)
