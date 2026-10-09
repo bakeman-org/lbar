@@ -4,4 +4,5 @@ lbar.so
 *.so
 lbar-cli
 lbar
-lbar.luastatic.c
+
+*.luastatic.c

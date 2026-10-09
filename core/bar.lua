@@ -26,7 +26,7 @@ function M.new(ctx, cfg)
 	self.x = self.margin
 	self.y = (self.pos == "top") and self.margin or (ctx.scr_h - self.h - self.margin)
 	self.padding = tonumber(cfg.padding) or 16
-	self.gap = tonumber(cfg.gap) or 10
+	self.gap = tonumber(cfg.gap) or 6
 
 	local rc = ctx.L.lbar_bar_create(ctx.Lctx, self.h, self.pos == "top" and 0 or 1, self.margin)
 	if rc ~= 0 then

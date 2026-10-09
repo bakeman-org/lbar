@@ -21,12 +21,16 @@ tables.en = setmetatable({}, {
 	end,
 })
 
+-- explicit English for a key whose source string is a format pattern
+tables.en["%s %s %d"] = "%s %s %d"
+
 tables.zh = {
 	-- ------------------------------------------------------- panel headers
 	["System Info"] = "系统信息",
 	["System Monitor"] = "系统监视器",
 	["settings"] = "设置",
 	["power"] = "电源",
+	["battery"] = "电量",
 	["wifi"] = "Wi-Fi",
 	["Apps"] = "应用",
 	["music player"] = "音乐播放器",
@@ -75,6 +79,7 @@ tables.zh = {
 	["Local IP"] = "本机 IP",
 	["User"] = "用户",
 	["live refresh · 2s"] = "实时刷新 · 2秒",
+	["hardware"] = "硬件",
 
 	-- ------------------------------------------------------ bar items
 	["mon"] = "监控",
@@ -87,6 +92,7 @@ tables.zh = {
 	["BAT"] = "电",
 	["LOW"] = "低",
 	["CHG"] = "充",
+	["WS"] = "工作区",
 	["MEM"] = "内",
 	["pomo"] = "番茄",
 	["♪ music"] = "♪ 音乐",
@@ -116,6 +122,11 @@ tables.zh = {
 	["filter %d / %d · ctrl+f search · ctrl+k kill"] = "筛选 %d / %d · ctrl+f 搜索 · ctrl+k 结束",
 	["ctrl+f search process or pid"] = "ctrl+f 搜索进程或 PID",
 	["SIGTERM sent to pid %d"] = "已向进程 %d 发送 SIGTERM",
+	["kill failed: pid %d"] = "结束进程 %d 失败",
+	["cores"] = "核心",
+	["memory"] = "内存",
+	["processes"] = "进程",
+	["refreshed"] = "已刷新",
 	["procfs"] = "procfs",
 	["procfs + probe"] = "procfs + 探测",
 
@@ -136,6 +147,13 @@ tables.zh = {
 	["ctrl+f search"] = "ctrl+f 搜索",
 	["filter %d / %d"] = "筛选 %d / %d",
 	["audio unavailable"] = "音频不可用",
+	["sequential"] = "顺序播放",
+	["loop"] = "循环播放",
+	["single"] = "单曲",
+	["shuffle"] = "随机播放",
+	["play mode: %s"] = "播放模式：%s",
+	["playback started"] = "开始播放",
+	["now playing: %s"] = "正在播放：%s",
 
 	-- ---------------------------------------------------------- wifi
 	["wifi disabled"] = "Wi-Fi 已关闭",
@@ -195,6 +213,7 @@ tables.zh = {
 	["Nov"] = "11月",
 	["Dec"] = "12月",
 	["%d-%02d"] = "%d年%02d月",
+	["%s %s %d"] = "%s %s%d日", -- "Thu Oct 8" / "周四 10月8日"
 
 	-- -------------------------------------------------------- weather
 	["feels"] = "体感",
@@ -216,6 +235,7 @@ tables.zh = {
 	["auto-locate, first fetch ~1-2s"] = "自动定位，首次获取约 1-2 秒",
 	["parse failed"] = "解析失败",
 	["weather fetch failed"] = "天气获取失败",
+	["details"] = "详情",
 
 	-- ------------------------------------------------------- launcher
 	["no matching apps, press Enter to run as command"] = "没有匹配的应用，按回车作为命令运行",
@@ -230,6 +250,7 @@ tables.zh = {
 	["copied"] = "已复制",
 	["copy failed"] = "复制失败",
 	["clipboard history cleared"] = "剪贴板历史已清空",
+	["entry deleted"] = "已删除条目",
 
 	-- -------------------------------------------------------- ui demo
 	["controls"] = "控件",
@@ -282,6 +303,7 @@ tables.zh = {
 
 	-- -------------------------------------------------- keybinds help
 	["no keybinds in config.lua"] = "config.lua 中暂无快捷键",
+	["%d keybinds · %d groups"] = "%d 个快捷键 · %d 组",
 
 	-- ------------------------------------------------------- pomodoro
 	["focus"] = "专注",
@@ -291,6 +313,9 @@ tables.zh = {
 	["completed %d"] = "已完成 %d 个",
 	["pomodoro #%d done, take a break"] = "番茄钟 #%d 完成，休息一下",
 	["break over, next pomodoro"] = "休息结束，开始下一个番茄钟",
+	["timer started"] = "计时开始",
+	["timer paused"] = "计时已暂停",
+	["timer reset"] = "计时已重置",
 
 	-- --------------------------------------------------------- volume
 	["VOL -"] = "音 -",
@@ -298,6 +323,7 @@ tables.zh = {
 	["VOL %d%%"] = "音 %d%%",
 	["mute"] = "静音",
 	["muted"] = "已静音",
+	["unmuted"] = "已取消静音",
 
 	-- ---------------------------------------------------------- power
 	["lock"] = "锁屏",
@@ -308,6 +334,12 @@ tables.zh = {
 	["confirm: %s?"] = "确认：%s？",
 	["lock runs at once · others ask first"] = "锁屏立即执行 · 其他操作需确认",
 	["logout: unsupported session"] = "注销：不支持的会话类型",
+	["locking…"] = "锁屏中…",
+	["logging out…"] = "注销中…",
+	["suspending…"] = "睡眠中…",
+	["rebooting…"] = "重启中…",
+	["powering off…"] = "关机中…",
+	["%s failed"] = "%s 失败",
 
 	-- ----------------------------------------------------------- logo
 	["backend"] = "后端",
@@ -322,6 +354,19 @@ tables.zh = {
 	-- ------------------------------------------------------- hide all
 	["closed %d panel(s)"] = "已关闭 %d 个面板",
 	["no open panels"] = "没有打开的面板",
+	["panels hidden"] = "面板已隐藏",
+	["panels shown"] = "面板已恢复",
+	["no panels to show"] = "没有可恢复的面板",
+
+	-- ------------------------------------------------- text input tools
+	["Select all"] = "全选",
+	["Copy"] = "复制",
+	["Cut"] = "剪切",
+	["Paste"] = "粘贴",
+	["Copied"] = "已复制",
+	["Cut to clipboard"] = "已剪切",
+	["Pasted"] = "已粘贴",
+	["Clipboard empty"] = "剪贴板为空",
 
 	-- -------------------------------------------------- settings panel
 	["themes"] = "主题",
@@ -375,6 +420,9 @@ tables.zh = {
 	["schedule"] = "日程",
 	["add"] = "添加",
 	["no schedule"] = "暂无日程",
+	["click a schedule to edit"] = "点击日程可编辑",
+	["update"] = "更新",
+	["updated"] = "已更新",
 	["alarm: %s"] = "闹钟：%s",
 	["invalid schedule format"] = "无法解析日程（示例：2026-10-09 07:30 内容）",
 	["schedule file"] = "日程文件",
@@ -391,6 +439,13 @@ tables.zh = {
 	["saved — reload to apply"] = "已保存 — 重载后生效",
 	["saved — reloading…"] = "已保存 — 重载中…",
 
+	-- ------------------------------------------------------ file dialog
+	["open file"] = "打开文件",
+	["path"] = "路径",
+	["location"] = "位置",
+	["empty folder"] = "空文件夹",
+	["parent folder"] = "上级目录",
+
 	-- ---------------------------------------------------- common toasts
 	["theme: %s"] = "主题：%s",
 	["mode: %s"] = "模式：%s",
@@ -401,6 +456,54 @@ tables.zh = {
 	["system"] = "系统",
 	["windows"] = "窗口",
 	["other"] = "其他",
+
+	-- -------------------------------- keybinds_help descs (config-provided)
+	["keybind help (this panel)"] = "快捷键帮助（本面板）",
+	["app launcher"] = "应用启动器",
+	["screen color picker"] = "屏幕取色器",
+	["pomodoro timer"] = "番茄钟计时器",
+	["weather panel"] = "天气面板",
+	["system info"] = "系统信息",
+	["system monitor"] = "系统监视器",
+	["ui component demo"] = "UI 组件演示",
+	["clock panel"] = "时钟面板",
+	["volume panel"] = "音量面板",
+	["settings panel"] = "设置面板",
+	["wallpaper picker"] = "壁纸选择器",
+	["wifi networks"] = "Wi-Fi 网络",
+	["battery + power menu"] = "电量与电源菜单",
+	["toggle dark / light theme"] = "切换深色 / 浅色主题",
+	["dump visible panel screenshot to /tmp"] = "将可见面板截图保存到 /tmp",
+	["debug mode: toasts stay on screen"] = "调试模式：通知驻留屏幕",
+	["full screen shot (panel/toast tagged) to ~/Pictures/lbar"] = "全屏截图（标记面板/通知）至 ~/Pictures/lbar",
+	["hide / restore all panels"] = "隐藏 / 恢复所有面板",
+	["move window left"] = "窗口左移",
+	["move window right"] = "窗口右移",
+	["move window up"] = "窗口上移",
+	["move window down"] = "窗口下移",
+	["window wider"] = "窗口加宽",
+	["window narrower"] = "窗口收窄",
+	["window taller"] = "窗口加高",
+	["window shorter"] = "窗口缩短",
+	["reset panel size and position"] = "重置面板大小和位置",
+	["hot reload config and plugins"] = "热重载配置与插件",
+	["toggle auto reload"] = "切换自动重载",
+	["quit lbar"] = "退出 lbar",
+
+	-- --------------------------------------- move_window / resize_window
+	["Move"] = "移动",
+	["Resize"] = "缩放",
+	["move window"] = "移动窗口",
+	["resize window"] = "调整窗口",
+	["direction"] = "方向",
+	["window moved"] = "窗口已移动",
+	["window resized"] = "窗口已调整",
+	["no window to move"] = "没有可移动的窗口",
+	["no window to resize"] = "没有可调整的窗口",
+	["panel size reset"] = "面板已重置",
+	["no panel to reset"] = "没有可重置的面板",
+	["move: %d px per press"] = "移动：每次 %d 像素",
+	["resize: %d px per press"] = "调整：每次 %d 像素",
 }
 
 function M.detect()

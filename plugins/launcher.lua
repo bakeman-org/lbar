@@ -13,6 +13,22 @@ local XK_e = 0x0065
 local XK_E = 0x0045
 local MOD1_MASK = 0x0008
 
+-- MIUIX-style geometry: rounded card rows, unified side padding,
+-- scrollbar lane reserved at the right edge
+local PAD, SB_W = 20, 6
+local ROW_GAP = 8 -- gap between row cards
+local CARD_R = 14 -- row card corner radius
+
+local function row_h(lh)
+	return math.max(46, lh + 28)
+end
+
+-- rough char budget for a pixel width (commands are mostly ASCII)
+local function fit_chars(ctx, avail)
+	local cw = select(1, ctx.get_text_size("n"))
+	return math.max(2, math.floor(avail / math.max(4, cw)))
+end
+
 -- dmenu_path (~3000 entries) is loaded as a background job; sync loading at
 -- init or on every show made the bar stutter and panels slow to open
 local function load_dmenu_async(ctx)
@@ -90,19 +106,27 @@ local function build_model(ctx, user_size)
 	local n = M.filtered and #M.filtered or 0
 	local m = {
 		LH = lh,
-		PAD = 20,
+		PAD = PAD,
 		W = 520,
 		APPBAR = lh + 26,
-		SEARCH_H = lh + 20,
-		ROW_H = lh + 20,
-		VROWS = math.min(8, math.max(1, n)),
+		IN_H = lh + 20,
+		SEARCH_H = 14 + (lh + 20) + 12,
+		ROW_H = row_h(lh),
+		ROW_GAP = ROW_GAP,
+		FOOTER_H = lh + 30,
 	}
+	m.view_y = m.APPBAR + m.SEARCH_H
 	if user_size then
 		m.W = math.max(360, user_size.w)
-		local used = m.APPBAR + 14 + m.SEARCH_H + 12 + 14
-		m.VROWS = math.max(3, math.floor((user_size.h - used) / m.ROW_H))
+		m.H = math.max(240, user_size.h)
+	else
+		-- natural height follows the (roomy) card rows, capped at 85% of
+		-- the screen; overflow scrolls inside the view
+		local content = math.max(1, n) * (m.ROW_H + ROW_GAP)
+		m.H = math.max(m.view_y + m.ROW_H + m.FOOTER_H,
+			math.min(ctx.scr_h * 0.85, m.view_y + content + m.FOOTER_H))
 	end
-	m.H = m.APPBAR + 14 + m.SEARCH_H + 12 + m.VROWS * m.ROW_H + 14
+	m.VROWS = math.max(1, math.floor((m.H - m.view_y - m.FOOTER_H + ROW_GAP) / (m.ROW_H + ROW_GAP)))
 	return m
 end
 
@@ -113,56 +137,92 @@ local function do_draw(p)
 	local T = ctx.theme
 	local lh = m.LH
 
-	-- self-heal on resize: model follows the live surface so derived rows
-	-- and right edges always match the real panel
+	-- self-heal on resize: model follows the live surface so the view band,
+	-- visible row count and footer always match the real panel
 	m.W, m.H = p.w, p.h
-	local used = m.APPBAR + 14 + m.SEARCH_H + 12 + 14
-	m.VROWS = math.max(1, math.floor((m.H - used) / m.ROW_H))
+	local in_extra = p.input and p.input:extra_h() or 0
+	m.view_y = m.APPBAR + m.SEARCH_H + in_extra
+	m.view_h = math.max(m.ROW_H, m.H - m.view_y - m.FOOTER_H)
+	m.VROWS = math.max(1, math.floor((m.view_h + m.ROW_GAP) / (m.ROW_H + m.ROW_GAP)))
 	local W, H = m.W, m.H
-
-	p:draw_header(I.t("Apps"), Util.keybind_hint(ctx, "toggle_launcher"), m.PAD)
-
-	local sy = m.APPBAR + 14
-	local in_w = W - m.PAD * 2 - 28 - 12
-	p.input:set_rect(m.PAD, sy, in_w, m.SEARCH_H)
-	p.input:draw(p)
-
-	local list_y = sy + m.SEARCH_H + 12
 	local n = #M.filtered
+
+	local CR = W - PAD - SB_W -- card right edge
+	local card_w = CR - PAD
+
+	-- scrollable content is painted FIRST; the fixed chrome (header, search
+	-- band, footer) is painted on top further down, which clips every row
+	-- to the view band without needing a scissor primitive
+	local maxs = math.max(0, n - m.VROWS)
+	M.scroll = math.max(0, math.min(maxs, M.scroll))
 	for i = 1, m.VROWS do
 		local li = M.scroll + i
 		if li > n then
 			break
 		end
 		local e = M.filtered[li]
-		local ry = list_y + (i - 1) * m.ROW_H
+		local ry = m.view_y + (i - 1) * (m.ROW_H + m.ROW_GAP)
 		local sel = li == M.sel
-		local hover = ui:hover(0, ry, W, m.ROW_H)
-		local row_bg = sel and T.surface_hi or (hover and T.surface_hi or T.bg)
-		p:rect(8, ry, W - 16, m.ROW_H, row_bg)
-		if sel then
-			p:rrect(14, ry + 6, 4, m.ROW_H - 12, 2, T.primary)
-		end
-		p:rrect(28, ry + math.floor((m.ROW_H - 8) / 2), 8, 8, 4, sel and T.primary or T.outline)
+		local hover = ui:hover(PAD, ry, card_w, m.ROW_H)
+		p:rrect(PAD, ry, card_w, m.ROW_H, CARD_R,
+			sel and T.surface_hi or (hover and T.surface_hover or T.surface))
 		local ty = ry + math.floor((m.ROW_H - lh) / 2)
-		p:text(48, ty, truncate(e.name, 24), sel and T.on_surface or T.on_var)
-		local cw = select(1, ctx.get_text_size(e.cmd))
-		if cw > W - 48 - 24 - 200 then
-			p:text(W - 24 - math.min(cw, 260), ty, truncate(e.cmd, 34), T.hint)
-		else
-			p:text(W - 24 - cw, ty, e.cmd, T.hint)
+		p:rrect(PAD + 16, ry + math.floor((m.ROW_H - 8) / 2), 8, 8, 4, sel and T.primary or T.outline)
+		local name = truncate(e.name, 24)
+		p:text(PAD + 36, ty, name, sel and T.on_surface or T.on_var)
+		-- command right-aligned, truncated to the space next to the name
+		local cmd = e.cmd
+		local avail = CR - 16 - (PAD + 36 + select(1, ctx.get_text_size(name)) + 12)
+		if select(1, ctx.get_text_size(cmd)) > avail then
+			cmd = truncate(cmd, fit_chars(ctx, math.max(40, avail)))
 		end
-		if ui:clicked(0, ry, W, m.ROW_H) then
-			M.sel = li
-			M.launch(e)
+		p:text(CR - 16 - select(1, ctx.get_text_size(cmd)), ty, cmd, T.hint)
+		if ui:clicked(PAD, ry, card_w, m.ROW_H) then
+			-- never launch mid-draw: queue for M.tick (pcall'd there)
+			M.pending_launch = e
 		end
 	end
 
 	if n == 0 then
 		local empty = M.query ~= "" and I.t("no matching apps, press Enter to run as command")
 			or I.t("configure apps in config.lua launcher.entries")
-		local ey = list_y + math.min(40, math.max(0, m.VROWS * m.ROW_H - lh - 4))
-		p:text(math.floor(W / 2 - select(1, ctx.get_text_size(empty)) / 2), ey, empty, T.hint)
+		local ew = select(1, ctx.get_text_size(empty))
+		local ey = m.view_y + math.floor(math.max(0, m.view_h - lh) / 2)
+		p:text(math.floor(W / 2 - ew / 2), ey, empty, T.hint)
+	end
+
+	-- scrollbar (right edge, inside padding)
+	if maxs > 0 then
+		local off = ui:scrollbar("scr", W - 14, m.view_y, SB_W, m.view_h, M.scroll, maxs)
+		M.scroll = off
+	end
+
+	-- fixed chrome painted last so scrolled content can never overlap it
+
+	-- search band: opaque fill over the scrolled rows, then the input
+	p:rect(0, m.APPBAR, W, m.SEARCH_H + in_extra, p.bg)
+	p.input:set_rect(PAD, m.APPBAR + 14, W - PAD * 2 - SB_W, m.IN_H)
+	p.input:draw(p)
+
+	-- header (draw_header paints its own opaque band)
+	p:draw_header(I.t("Apps"), Util.keybind_hint(ctx, "toggle_launcher"), PAD)
+
+	-- footer: opaque band covers rows scrolled past the bottom; pill
+	-- button laid out like a MIUI dialog (primary action filled)
+	local fy = H - m.FOOTER_H
+	p:rect(0, fy, W, m.FOOTER_H, p.bg)
+	p:rect(PAD, fy, W - PAD * 2, 1, T.outline)
+	local mid_y = fy + math.floor((m.FOOTER_H - lh) / 2)
+	local cnt = M.query ~= "" and string.format("%d / %d", n, #M.entries) or tostring(n)
+	p:text(PAD, mid_y, cnt, T.hint)
+	local bw = 72
+	local bh = lh + 14
+	local bo = math.floor((m.FOOTER_H - bh) / 2)
+	if ui:id_button("ft_close", W - PAD - bw, fy + bo, bw, bh, I.t("close"), { filled = true }) then
+		-- never hide a panel mid-draw: defer like settings does
+		M.pending_action = function()
+			p:hide()
+		end
 	end
 end
 
@@ -185,6 +245,8 @@ end
 function M.init(ctx)
 	M.ctx = ctx
 	M.query = ""
+	M.pending_launch = nil
+	M.pending_action = nil
 	M.reload_entries()
 	if (ctx.config.launcher or {}).use_dmenu_path ~= false then
 		load_dmenu_async(ctx)
@@ -357,6 +419,18 @@ function M.tick(ctx, dt)
 			log("dmenu_path timeout")
 		end
 	end
+	-- UI actions queued by draw() run here, outside the draw pass,
+	-- pcall-guarded so a failure can never take the bar down
+	if M.pending_launch then
+		local e = M.pending_launch
+		M.pending_launch = nil
+		pcall(M.launch, e)
+	end
+	if M.pending_action then
+		local fn = M.pending_action
+		M.pending_action = nil
+		pcall(fn)
+	end
 	-- auto-fit when the filtered result count changes (cheap change guard;
 	-- fit() itself no-ops when the size already matches or user resized)
 	if M.panel and #M.filtered ~= (M.fit_n or -1) then
@@ -366,6 +440,8 @@ function M.tick(ctx, dt)
 end
 
 function M.shutdown()
+	M.pending_launch = nil
+	M.pending_action = nil
 	M.ctx = nil
 end
 

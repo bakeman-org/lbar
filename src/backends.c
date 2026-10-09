@@ -36,6 +36,8 @@ static void lbar_log(const char *level, const char *fmt, ...) {
 
 struct zwlr_layer_shell_v1;
 struct zwlr_layer_surface_v1;
+struct zwp_text_input_v3;
+struct zwp_text_input_manager_v3;
 
 #define ZWLR_LAYER_SHELL_V1_GET_LAYER_SURFACE 0
 
@@ -157,17 +159,116 @@ static void zwlr_ls_destroy(struct zwlr_layer_surface_v1 *ls) {
                          WL_MARSHAL_FLAG_DESTROY);
 }
 
+/* zwp_text_input_v3 / zwp_text_input_manager_v3 — wayland IME support so
+ * fcitx5/ibus can commit CJK text. Opcodes verified against
+ * wayland-protocols text-input-unstable-v3.xml: destroy is the first request
+ * (opcode 0) on both interfaces, get_text_input follows on the manager. */
+#define ZWP_TEXT_INPUT_MANAGER_V3_DESTROY 0
+#define ZWP_TEXT_INPUT_MANAGER_V3_GET_TEXT_INPUT 1
+
+#define ZWP_TEXT_INPUT_V3_ENABLE 1
+#define ZWP_TEXT_INPUT_V3_DISABLE 2
+#define ZWP_TEXT_INPUT_V3_SET_CURSOR_RECTANGLE 6
+#define ZWP_TEXT_INPUT_V3_COMMIT 7
+
+static const struct wl_interface zwp_text_input_v3_interface;
+static const struct wl_interface zwp_text_input_manager_v3_interface;
+
+static const struct wl_interface *zwp_ti_manager_types[] = {
+    &zwp_text_input_v3_interface, &wl_seat_interface,
+};
+static const struct wl_message zwp_ti_manager_requests[] = {
+    {"destroy", "", NULL},
+    {"get_text_input", "no", zwp_ti_manager_types},
+};
+static const struct wl_interface zwp_text_input_manager_v3_interface = {
+    "zwp_text_input_manager_v3", 1, 2, zwp_ti_manager_requests, 0, NULL,
+};
+
+/* per-arg types for the event signatures (cumulative arg index): only
+ * enter's surface is an object arg */
+static const struct wl_interface *zwp_ti_types[] = {
+    &wl_surface_interface, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+};
+static const struct wl_message zwp_ti_requests[] = {
+    {"destroy", "", NULL},
+    {"enable", "", NULL},
+    {"disable", "", NULL},
+    {"set_surrounding_text", "sii", NULL},
+    {"set_text_change_cause", "u", NULL},
+    {"set_content_type", "uu", NULL},
+    {"set_cursor_rectangle", "iiii", NULL},
+    {"commit", "", NULL},
+};
+static const struct wl_message zwp_ti_events[] = {
+    {"enter", "o", zwp_ti_types},
+    {"leave", "", zwp_ti_types + 1},
+    {"preedit_string", "sii", zwp_ti_types + 1},
+    {"commit_string", "s", zwp_ti_types + 1},
+    {"delete_surrounding_text", "uu", zwp_ti_types + 1},
+    {"done", "u", zwp_ti_types + 1},
+};
+static const struct wl_interface zwp_text_input_v3_interface = {
+    "zwp_text_input_v3", 1, 8, zwp_ti_requests, 6, zwp_ti_events,
+};
+
+struct zwp_text_input_v3_listener {
+  void (*enter)(void *data, struct zwp_text_input_v3 *ti,
+                struct wl_surface *surface);
+  void (*leave)(void *data, struct zwp_text_input_v3 *ti);
+  void (*preedit_string)(void *data, struct zwp_text_input_v3 *ti,
+                         const char *text, int32_t cursor_begin,
+                         int32_t cursor_end);
+  void (*commit_string)(void *data, struct zwp_text_input_v3 *ti,
+                        const char *text);
+  void (*delete_surrounding_text)(void *data, struct zwp_text_input_v3 *ti,
+                                  uint32_t before_length,
+                                  uint32_t after_length);
+  void (*done)(void *data, struct zwp_text_input_v3 *ti, uint32_t serial);
+};
+
+static struct zwp_text_input_v3 *zwp_ti_mgr_get_text_input(
+    struct zwp_text_input_manager_v3 *mgr, struct wl_seat *seat) {
+  return (struct zwp_text_input_v3 *)wl_proxy_marshal_flags(
+      (struct wl_proxy *)mgr, ZWP_TEXT_INPUT_MANAGER_V3_GET_TEXT_INPUT,
+      &zwp_text_input_v3_interface, wl_proxy_get_version((struct wl_proxy *)mgr),
+      0, NULL, seat);
+}
+static void zwp_ti_enable(struct zwp_text_input_v3 *ti) {
+  wl_proxy_marshal_flags((struct wl_proxy *)ti, ZWP_TEXT_INPUT_V3_ENABLE, NULL,
+                         wl_proxy_get_version((struct wl_proxy *)ti), 0);
+}
+static void zwp_ti_disable(struct zwp_text_input_v3 *ti) {
+  wl_proxy_marshal_flags((struct wl_proxy *)ti, ZWP_TEXT_INPUT_V3_DISABLE, NULL,
+                         wl_proxy_get_version((struct wl_proxy *)ti), 0);
+}
+static void zwp_ti_set_cursor_rect(struct zwp_text_input_v3 *ti, int32_t x,
+                                   int32_t y, int32_t w, int32_t h) {
+  wl_proxy_marshal_flags((struct wl_proxy *)ti,
+                         ZWP_TEXT_INPUT_V3_SET_CURSOR_RECTANGLE, NULL,
+                         wl_proxy_get_version((struct wl_proxy *)ti), 0, x, y,
+                         w, h);
+}
+static void zwp_ti_commit(struct zwp_text_input_v3 *ti) {
+  wl_proxy_marshal_flags((struct wl_proxy *)ti, ZWP_TEXT_INPUT_V3_COMMIT, NULL,
+                         wl_proxy_get_version((struct wl_proxy *)ti), 0);
+}
+
 #define LBAR_EV_MAX 64
+#define LBAR_EV_TEXT_MAX 512
 #define LBAR_POPUP_MAX 32
 
 typedef struct {
-  int type; /* 1=motion 2=press 3=release 4=expose/popup-hidden 5=key */
+  int type; /* 1=motion 2=press 3=release 4=expose/popup-hidden 5=key
+               6=ime-commit 7=ime-preedit */
   int x, y;
   int root_x, root_y;
   int button;
   int target; /* 0=bar 1=popup 2=key */
   int keycode;
   int keystate;
+  int a, b; /* mouse/key events: source popup id; ime: preedit cursor span */
+  char text[LBAR_EV_TEXT_MAX];
 } lbar_ev_t;
 
 typedef struct {
@@ -220,6 +321,13 @@ typedef struct lbar_ctx {
   struct xkb_state *xkb_st;
   struct wl_output *wl_out;
   struct zwlr_layer_shell_v1 *wl_shell;
+  struct zwp_text_input_manager_v3 *wl_ti_mgr;
+  struct zwp_text_input_v3 *wl_ti;
+  char ti_preedit[LBAR_EV_TEXT_MAX];
+  char ti_commit[LBAR_EV_TEXT_MAX];
+  int ti_preedit_begin, ti_preedit_end;
+  int ti_preedit_dirty;
+  int ti_enabled;
 
   struct wl_surface *bar_surf;
   struct zwlr_layer_surface_v1 *bar_layer;
@@ -235,6 +343,7 @@ typedef struct lbar_ctx {
   int have_comp, have_shm, have_seat, have_out, have_shell;
 
   int ptr_target;
+  int ptr_popup; /* popup id under the pointer (-1 = none) */
   int ptr_x, ptr_y;
   uint32_t ptr_leave_ms;
 
@@ -252,7 +361,7 @@ static uint32_t now_ms(void) {
 }
 
 static void ev_push(lbar_ctx *c, int type, int x, int y, int rx, int ry,
-                    int btn, int target, int key, int ks) {
+                    int btn, int target, int key, int ks, int aux) {
   int next = (c->ev_tail + 1) % LBAR_EV_MAX;
   if (next == c->ev_head)
     return;
@@ -266,6 +375,30 @@ static void ev_push(lbar_ctx *c, int type, int x, int y, int rx, int ry,
   e->target = target;
   e->keycode = key;
   e->keystate = ks;
+  e->a = aux;
+  c->ev_tail = next;
+}
+
+static void ev_push_text(lbar_ctx *c, int type, const char *text, int a, int b) {
+  int next = (c->ev_tail + 1) % LBAR_EV_MAX;
+  if (next == c->ev_head)
+    return;
+  lbar_ev_t *e = &c->events[c->ev_tail];
+  memset(e, 0, sizeof(*e));
+  e->type = type;
+  e->target = 1;
+  e->a = a;
+  e->b = b;
+  if (text) {
+    size_t n = strlen(text);
+    if (n > LBAR_EV_TEXT_MAX - 1)
+      n = LBAR_EV_TEXT_MAX - 1;
+    /* never split a UTF-8 codepoint on truncation */
+    while (n > 0 && ((unsigned char)text[n] & 0xC0) == 0x80)
+      n--;
+    memcpy(e->text, text, n);
+    e->text[n] = 0;
+  }
   c->ev_tail = next;
 }
 
@@ -411,6 +544,12 @@ static void wl_registry_global(void *data, struct wl_registry *reg,
                                    ver > 1 ? 1 : ver);
     c->have_shell = 1;
     LOG_INFO("zwlr_layer_shell_v1 v%u", ver);
+  } else if (!strcmp(iface, "zwp_text_input_manager_v3")) {
+    /* optional: absent on compositors without IME protocol support */
+    c->wl_ti_mgr = wl_registry_bind(reg, name,
+                                    &zwp_text_input_manager_v3_interface, 1);
+    if (c->wl_ti_mgr)
+      LOG_INFO("zwp_text_input_manager_v3 v%u", ver);
   }
 }
 static void wl_registry_remove(void *d, struct wl_registry *r, uint32_t n) {
@@ -427,21 +566,25 @@ static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
   lbar_ctx *c = data;
   (void)p;
   (void)serial;
-  if (surf == c->bar_surf)
+  c->ptr_popup = -1;
+  if (surf == c->bar_surf) {
     c->ptr_target = 1;
-  else {
+  } else {
     c->ptr_target = 0;
     for (int i = 0; i < c->n_popups; i++) {
       if (surf == c->popups[i].surf) {
         c->ptr_target = 2;
+        c->ptr_popup = i;
         break;
       }
     }
   }
   c->ptr_x = wl_fixed_to_int(sx);
   c->ptr_y = wl_fixed_to_int(sy);
-  LOG_INFO("wl ptr enter tgt=%d x=%d y=%d", c->ptr_target, c->ptr_x, c->ptr_y);
-  ev_push(c, 1, c->ptr_x, c->ptr_y, 0, 0, 0, c->ptr_target == 2 ? 1 : 0, 0, 0);
+  LOG_INFO("wl ptr enter tgt=%d pop=%d x=%d y=%d", c->ptr_target, c->ptr_popup,
+           c->ptr_x, c->ptr_y);
+  ev_push(c, 1, c->ptr_x, c->ptr_y, 0, 0, 0, c->ptr_target == 2 ? 1 : 0, 0, 0,
+          c->ptr_popup);
 }
 static void ptr_leave(void *data, struct wl_pointer *p, uint32_t serial,
                       struct wl_surface *surf) {
@@ -450,6 +593,7 @@ static void ptr_leave(void *data, struct wl_pointer *p, uint32_t serial,
   (void)serial;
   (void)surf;
   c->ptr_target = 0;
+  c->ptr_popup = -1;
   c->ptr_leave_ms = now_ms();
 }
 static void ptr_motion(void *data, struct wl_pointer *p, uint32_t t,
@@ -461,7 +605,8 @@ static void ptr_motion(void *data, struct wl_pointer *p, uint32_t t,
     return;
   c->ptr_x = wl_fixed_to_int(sx);
   c->ptr_y = wl_fixed_to_int(sy);
-  ev_push(c, 1, c->ptr_x, c->ptr_y, 0, 0, 0, c->ptr_target == 2 ? 1 : 0, 0, 0);
+  ev_push(c, 1, c->ptr_x, c->ptr_y, 0, 0, 0, c->ptr_target == 2 ? 1 : 0, 0, 0,
+          c->ptr_popup);
 }
 static int wl_btn_code(uint32_t b) {
   switch (b) {
@@ -486,13 +631,13 @@ static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
   (void)p;
   (void)serial;
   (void)t;
-  LOG_INFO("wl ptr button btn=%u state=%u tgt=%d x=%d y=%d", btn, state,
-           c->ptr_target, c->ptr_x, c->ptr_y);
+  LOG_INFO("wl ptr button btn=%u state=%u tgt=%d pop=%d x=%d y=%d", btn, state,
+           c->ptr_target, c->ptr_popup, c->ptr_x, c->ptr_y);
   if (c->ptr_target == 0)
     return;
   int type = (state == WL_POINTER_BUTTON_STATE_PRESSED) ? 2 : 3;
   ev_push(c, type, c->ptr_x, c->ptr_y, 0, 0, wl_btn_code(btn),
-          c->ptr_target == 2 ? 1 : 0, 0, 0);
+          c->ptr_target == 2 ? 1 : 0, 0, 0, c->ptr_popup);
 }
 static void ptr_axis(void *data, struct wl_pointer *p, uint32_t t,
                      uint32_t axis, wl_fixed_t value) {
@@ -505,7 +650,7 @@ static void ptr_axis(void *data, struct wl_pointer *p, uint32_t t,
     return;
   int btn = (value < 0) ? 4 : 5;
   ev_push(c, 2, c->ptr_x, c->ptr_y, 0, 0, btn, c->ptr_target == 2 ? 1 : 0, 0,
-          0);
+          0, c->ptr_popup);
 }
 static void ptr_frame(void *d, struct wl_pointer *p) {
   (void)d;
@@ -723,7 +868,7 @@ static void pop_configure(void *data, struct zwlr_layer_surface_v1 *ls,
   p->configured = 1;
   if (first || changed) {
     p->flush_pending = 0;
-    ev_push(c, 4, 0, 0, 0, 0, (int)(p - c->popups), 1, 0, 0);
+    ev_push(c, 4, 0, 0, 0, 0, 0, 1, 0, 0, (int)(p - c->popups));
   }
 }
 static void pop_closed(void *data, struct zwlr_layer_surface_v1 *ls) {
@@ -783,7 +928,7 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
     return;
   uint32_t mods =
       xkb_state_serialize_mods(c->xkb_st, XKB_STATE_MODS_DEPRESSED);
-  ev_push(c, 5, 0, 0, 0, 0, 0, 1, (int)key + 8, (int)mods);
+  ev_push(c, 5, 0, 0, 0, 0, 0, 1, (int)key + 8, (int)mods, 0);
 }
 static void kbd_modifiers(void *data, struct wl_keyboard *kbd, uint32_t serial,
                           uint32_t dep, uint32_t lat, uint32_t loc,
@@ -806,6 +951,90 @@ static const struct wl_keyboard_listener kbd_listener = {
     kbd_key,    kbd_modifiers, kbd_repeat,
 };
 
+static void ti_enter(void *data, struct zwp_text_input_v3 *ti,
+                     struct wl_surface *surf) {
+  lbar_ctx *c = data;
+  (void)surf;
+  /* re-assert the enabled state for the newly focused surface: our enable
+   * was sent from Lua when the input got focus, which can race ahead of the
+   * compositor attaching this text input to the surface */
+  if (c->ti_enabled) {
+    zwp_ti_enable(ti);
+    zwp_ti_commit(ti);
+    wl_display_flush(c->wl_dpy);
+  }
+}
+static void ti_leave(void *data, struct zwp_text_input_v3 *ti) {
+  lbar_ctx *c = data;
+  (void)ti;
+  if (c->ti_preedit[0]) {
+    c->ti_preedit[0] = 0;
+    c->ti_preedit_dirty = 1;
+  }
+}
+static void ti_preedit_string(void *data, struct zwp_text_input_v3 *ti,
+                              const char *text, int32_t cursor_begin,
+                              int32_t cursor_end) {
+  lbar_ctx *c = data;
+  (void)ti;
+  size_t n = text ? strlen(text) : 0;
+  if (n > LBAR_EV_TEXT_MAX - 1)
+    n = LBAR_EV_TEXT_MAX - 1;
+  while (n > 0 && text && ((unsigned char)text[n] & 0xC0) == 0x80)
+    n--;
+  if (n)
+    memcpy(c->ti_preedit, text, n);
+  c->ti_preedit[n] = 0;
+  c->ti_preedit_begin = cursor_begin;
+  c->ti_preedit_end = cursor_end;
+  c->ti_preedit_dirty = 1;
+}
+static void ti_commit_string(void *data, struct zwp_text_input_v3 *ti,
+                             const char *text) {
+  lbar_ctx *c = data;
+  (void)ti;
+  size_t n = text ? strlen(text) : 0;
+  if (n > LBAR_EV_TEXT_MAX - 1)
+    n = LBAR_EV_TEXT_MAX - 1;
+  while (n > 0 && text && ((unsigned char)text[n] & 0xC0) == 0x80)
+    n--;
+  if (n)
+    memcpy(c->ti_commit, text, n);
+  c->ti_commit[n] = 0;
+  /* a commit ends the composition; if the compositor did not send an empty
+   * preedit_string in the same batch, clear the stale preedit ourselves */
+  if (c->ti_preedit[0]) {
+    c->ti_preedit[0] = 0;
+    c->ti_preedit_dirty = 1;
+  }
+}
+static void ti_delete_surrounding_text(void *data, struct zwp_text_input_v3 *ti,
+                                       uint32_t before, uint32_t after) {
+  (void)data;
+  (void)ti;
+  (void)before;
+  (void)after;
+}
+static void ti_done(void *data, struct zwp_text_input_v3 *ti, uint32_t serial) {
+  lbar_ctx *c = data;
+  (void)ti;
+  (void)serial;
+  /* text-input-v3 batches preedit/commit until done — only now do the
+   * strings become authoritative */
+  if (c->ti_preedit_dirty) {
+    ev_push_text(c, 7, c->ti_preedit, c->ti_preedit_begin, c->ti_preedit_end);
+    c->ti_preedit_dirty = 0;
+  }
+  if (c->ti_commit[0]) {
+    ev_push_text(c, 6, c->ti_commit, 0, 0);
+    c->ti_commit[0] = 0;
+  }
+}
+static const struct zwp_text_input_v3_listener ti_listener = {
+    ti_enter,        ti_leave,       ti_preedit_string,
+    ti_commit_string, ti_delete_surrounding_text, ti_done,
+};
+
 static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps) {
   lbar_ctx *c = data;
   if ((caps & WL_SEAT_CAPABILITY_POINTER) && !c->wl_ptr) {
@@ -815,6 +1044,13 @@ static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps) {
   if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !c->wl_kbd) {
     c->wl_kbd = wl_seat_get_keyboard(seat);
     wl_keyboard_add_listener(c->wl_kbd, &kbd_listener, c);
+    if (c->wl_ti_mgr && !c->wl_ti) {
+      c->wl_ti = zwp_ti_mgr_get_text_input(
+          (struct zwp_text_input_manager_v3 *)c->wl_ti_mgr, seat);
+      if (c->wl_ti)
+        wl_proxy_add_listener((struct wl_proxy *)c->wl_ti,
+                              (void (**)(void))&ti_listener, c);
+    }
   }
 }
 static void seat_name(void *data, struct wl_seat *seat, const char *name) {
@@ -989,6 +1225,8 @@ static int x_open(lbar_ctx *c) {
   XSelectInput(c->x_dpy, c->x_root, KeyPressMask);
   LOG_INFO("x11 connected: %dx%d depth=%d", c->screen_w, c->screen_h,
            c->x_depth);
+  LOG_INFO("x11: no IME support (XIM out of scope) — ctrl+v clipboard paste "
+           "only");
   return 0;
 }
 
@@ -1154,6 +1392,7 @@ lbar_ctx *lbar_open(void) {
     return NULL;
   c->ipc_fd = -1;
   c->lock_fd = -1;
+  c->ptr_popup = -1;
   if (instance_lock(c) != 0) {
     free(c);
     return NULL;
@@ -1351,6 +1590,40 @@ int lbar_kbd_ungrab(lbar_ctx *c) {
   }
   XUngrabKeyboard(c->x_dpy, CurrentTime);
   XFlush(c->x_dpy);
+  return 0;
+}
+
+/* ── wayland IME (zwp_text_input_v3) — no-ops without manager/seat ── */
+int lbar_ti_enable(lbar_ctx *c, int x, int y, int w, int h) {
+  if (!c || !c->is_wayland || !c->wl_ti)
+    return -1;
+  if (w > 0 && h > 0)
+    zwp_ti_set_cursor_rect(c->wl_ti, x, y, w, h);
+  zwp_ti_enable(c->wl_ti);
+  zwp_ti_commit(c->wl_ti);
+  c->ti_enabled = 1;
+  wl_display_flush(c->wl_dpy);
+  return 0;
+}
+
+int lbar_ti_disable(lbar_ctx *c) {
+  if (!c || !c->is_wayland || !c->wl_ti)
+    return -1;
+  c->ti_enabled = 0;
+  c->ti_preedit[0] = 0;
+  c->ti_commit[0] = 0;
+  zwp_ti_disable(c->wl_ti);
+  zwp_ti_commit(c->wl_ti);
+  wl_display_flush(c->wl_dpy);
+  return 0;
+}
+
+int lbar_ti_set_cursor(lbar_ctx *c, int x, int y, int w, int h) {
+  if (!c || !c->is_wayland || !c->wl_ti)
+    return -1;
+  zwp_ti_set_cursor_rect(c->wl_ti, x, y, w, h);
+  zwp_ti_commit(c->wl_ti);
+  wl_display_flush(c->wl_dpy);
   return 0;
 }
 
@@ -1598,57 +1871,57 @@ static void drain_x11_events(lbar_ctx *c) {
     XEvent e;
     XNextEvent(c->x_dpy, &e);
     if (e.type == Expose) {
-      int ptgt = 0;
+      int pi = -1;
       for (int i = 0; i < c->n_popups; i++) {
         if (e.xexpose.window == c->popups[i].x_win) {
-          ptgt = 1;
+          pi = i;
           break;
         }
       }
       if (e.xexpose.window == c->x_bar_win)
-        ev_push(c, 4, 0, 0, 0, 0, 0, 0, 0, 0);
-      else if (ptgt)
-        ev_push(c, 4, 0, 0, 0, 0, 0, 1, 0, 0);
+        ev_push(c, 4, 0, 0, 0, 0, 0, 0, 0, 0, -1);
+      else if (pi >= 0)
+        ev_push(c, 4, 0, 0, 0, 0, 0, 1, 0, 0, pi);
     } else if (e.type == MotionNotify) {
-      int tgt = 0;
+      int pi = -1;
       for (int i = 0; i < c->n_popups; i++) {
         if (e.xmotion.window == c->popups[i].x_win) {
-          tgt = 1;
+          pi = i;
           break;
         }
       }
       ev_push(c, 1, e.xmotion.x, e.xmotion.y, e.xmotion.x_root,
-              e.xmotion.y_root, 0, tgt, 0, 0);
+              e.xmotion.y_root, 0, pi >= 0 ? 1 : 0, 0, 0, pi);
     } else if (e.type == ButtonPress) {
-      int tgt = 0;
+      int pi = -1;
       for (int i = 0; i < c->n_popups; i++) {
         if (e.xbutton.window == c->popups[i].x_win) {
-          tgt = 1;
+          pi = i;
           break;
         }
       }
       ev_push(c, 2, e.xbutton.x, e.xbutton.y, e.xbutton.x_root,
-              e.xbutton.y_root, e.xbutton.button, tgt, 0, 0);
+              e.xbutton.y_root, e.xbutton.button, pi >= 0 ? 1 : 0, 0, 0, pi);
     } else if (e.type == ButtonRelease) {
-      int tgt = 0;
+      int pi = -1;
       for (int i = 0; i < c->n_popups; i++) {
         if (e.xbutton.window == c->popups[i].x_win) {
-          tgt = 1;
+          pi = i;
           break;
         }
       }
       ev_push(c, 3, e.xbutton.x, e.xbutton.y, e.xbutton.x_root,
-              e.xbutton.y_root, e.xbutton.button, tgt, 0, 0);
+              e.xbutton.y_root, e.xbutton.button, pi >= 0 ? 1 : 0, 0, 0, pi);
     } else if (e.type == KeyPress) {
-      int ktgt = 2;
+      int pi = -1;
       for (int i = 0; i < c->n_popups; i++) {
         if (e.xkey.window == c->popups[i].x_win) {
-          ktgt = 1;
+          pi = i;
           break;
         }
       }
-      ev_push(c, 5, 0, 0, e.xkey.x_root, e.xkey.y_root, 0, ktgt,
-              (int)e.xkey.keycode, (int)e.xkey.state);
+      ev_push(c, 5, 0, 0, e.xkey.x_root, e.xkey.y_root, 0, pi >= 0 ? 1 : 2,
+              (int)e.xkey.keycode, (int)e.xkey.state, pi);
     }
   }
 }
@@ -1757,6 +2030,10 @@ void lbar_close(lbar_ctx *c) {
 
     if (c->wl_ptr)
       wl_pointer_destroy(c->wl_ptr);
+    if (c->wl_ti)
+      wl_proxy_destroy((struct wl_proxy *)c->wl_ti);
+    if (c->wl_ti_mgr)
+      wl_proxy_destroy((struct wl_proxy *)c->wl_ti_mgr);
     if (c->wl_seat)
       wl_seat_destroy(c->wl_seat);
     if (c->wl_out)

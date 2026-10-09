@@ -49,7 +49,11 @@ local function pixel_at(x, y)
 	if not s or x < 0 or y < 0 or x >= s.w or y >= s.h then
 		return nil
 	end
-	local i = (y * s.w + x) * 3
+	-- x/y are logical screen coords; the capture may be scaled (fractional
+	-- scaling), map into image space before indexing
+	local px = math.min(s.w - 1, math.floor(x * (s.sx or 1)))
+	local py = math.min(s.h - 1, math.floor(y * (s.sy or 1)))
+	local i = (py * s.w + px) * 3
 	return s.buf[i], s.buf[i + 1], s.buf[i + 2]
 end
 
@@ -73,7 +77,10 @@ end
 
 local function capture_wayland(ctx)
 	local w, h = ctx.scr_w, ctx.scr_h
-	local p = io.popen(string.format("grim -g '0,0 %dx%d' - 2>/dev/null", w, h))
+	-- grim outputs png by default; pixel_at expects raw rgb, so ask for ppm.
+	-- on scaled outputs the png/ppm may be bigger than the logical screen,
+	-- so record the sample scale factors (sx/sy) for pixel_at
+	local p = io.popen(string.format("grim -t ppm -g '0,0 %dx%d' - 2>/dev/null", w, h))
 	if not p then
 		return nil
 	end
@@ -125,7 +132,9 @@ local function capture_wayland(ctx)
 	end
 	local buf = ffi.new("unsigned char[?]", need)
 	ffi.copy(buf, data:sub(pos, pos + need - 1))
-	return { w = sw, h = sh, buf = buf }
+	local sx = (w and w > 0) and sw / w or 1
+	local sy = (h and h > 0) and sh / h or 1
+	return { w = sw, h = sh, buf = buf, sx = sx, sy = sy }
 end
 
 local function start_pick()

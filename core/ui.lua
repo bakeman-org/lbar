@@ -141,21 +141,27 @@ function UI:slider(id, x, y, w, value, opts)
 	return new_v, new_v ~= value
 end
 
+-- Material-style pill switch: fully rounded track, circular thumb that
+-- slides off→on. Track takes theme.primary when on / a dim surface with a
+-- hairline outline when off; the thumb grows when on and while pressed.
+-- Works at any w >= h and keeps the (value, changed) return pair.
 function UI:toggle(id, x, y, w, h, value, opts)
 	opts = opts or {}
 	local T = self.ctx.theme
-	local bg = value and (opts.on_color or T.primary) or T.surface_hi
-	self.surf:rrect(x, y, w, h, h / 2, bg)
-	local knob = h - 8
-	local kx = value and (x + w - knob - 4) or (x + 4)
-	self.surf:rrect(
-		kx,
-		y + 4,
-		knob,
-		knob,
-		knob / 2,
-		opts.knob or (value and T.on_primary or T.on_var)
-	)
+	local over = self:hover(x, y, w, h)
+	local pressed = over and self.mdown
+	local track = value and (opts.on_color or T.primary) or (opts.off_color or T.surface_hi)
+	if value then
+		self.surf:rrect(x, y, w, h, h / 2, track)
+	else
+		self.surf:rrect(x, y, w, h, h / 2, T.outline)
+		self.surf:rrect(x + 1, y + 1, w - 2, h - 2, h / 2 - 1, track)
+	end
+	local d = h - 10 + (value and 3 or 0) + (pressed and 2 or 0)
+	d = math.max(8, math.min(d, h - 4, w - 8))
+	local kx = value and (x + w - d - (h - d) / 2) or (x + (h - d) / 2)
+	local knob = opts.knob or (value and T.on_primary or T.on_var)
+	self.surf:rrect(kx, y + (h - d) / 2, d, d, d / 2, knob)
 	if self:clicked(x, y, w, h) then
 		return not value, true
 	end

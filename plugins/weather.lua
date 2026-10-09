@@ -12,6 +12,9 @@ local REDRAW_MS = 5000
 
 local FALLBACK_CITY = "New York"
 
+-- MIUIX-style geometry (mirrors plugins/settings.lua)
+local ROW_GAP, GROUP_GAP, CARD_R = 8, 28, 14
+
 local function icon_for(desc)
 	if not desc then
 		return "·"
@@ -145,9 +148,28 @@ local function build_model(ctx, user_size)
 	local m = {
 		LH = lh,
 		PAD = 20,
+		ROW_GAP = ROW_GAP,
 		W = 360,
-		H = lh * 8 + 80,
+		HEADER_H = lh + 26,
+		HERO_H = lh * 2 + 28,
+		ROW_H = math.max(46, lh + 28),
+		GROUP_H = lh + 8,
+		FOOTER_H = lh + 22,
 	}
+	-- natural height from the fixed row count, capped at 85% of the screen
+	local y = m.HEADER_H + 14
+	m.hero_y = y
+	y = y + m.HERO_H + m.ROW_GAP
+	y = y + GROUP_GAP - m.ROW_GAP -- widen before the group title
+	m.group_y = y
+	y = y + m.GROUP_H + m.ROW_GAP
+	m.row_y = {}
+	for i = 1, 3 do
+		m.row_y[i] = y
+		y = y + m.ROW_H + m.ROW_GAP
+	end
+	m.H = math.max(m.HEADER_H + m.FOOTER_H + 40,
+		math.min(ctx.scr_h * 0.85, y - m.ROW_GAP + 6 + m.FOOTER_H))
 	if user_size then
 		m.W = math.max(m.W, user_size.w)
 		m.H = math.max(m.H, user_size.h)
@@ -195,63 +217,67 @@ local function do_draw(p)
 	-- self-heal: model follows the live surface size (user resize)
 	m.W, m.H = p.w, p.h
 	local lh, PAD = m.LH, m.PAD
-	local W, H = m.W, m.H
+	local W = m.W
+	local card_w = W - PAD * 2
 
-	local hh = p:draw_header(I.t("Weather"), Util.keybind_hint(ctx, "toggle_weather"), PAD)
+	-- content layer painted FIRST; the footer band and the header below
+	-- cover it opaquely, which clips without needing a scissor
 
-	local y = hh + 18
-
+	-- hero card: temperature + icon on top, description + location below
+	p:rrect(PAD, m.hero_y, card_w, m.HERO_H, CARD_R, T.surface)
 	if M.data then
-		local w = M.data
-
-		local temp = (M.units == "f") and string.format("%d°F", math.floor(w.temp * 9 / 5 + 32))
-			or string.format("%d°C", math.floor(w.temp))
-		p:text(PAD, y, temp, T.on_surface)
-
-		local icon = I.t(icon_for(w.desc))
+		local wd = M.data
+		local temp = (M.units == "f") and string.format("%d°F", math.floor(wd.temp * 9 / 5 + 32))
+			or string.format("%d°C", math.floor(wd.temp))
+		p:text(PAD + 16, m.hero_y + 14, temp, T.on_surface)
+		local icon = I.t(icon_for(wd.desc))
 		local iw = select(1, ctx.get_text_size(icon))
-		p:text(W - PAD - iw - 2, y - 2, icon, T.primary_hi)
-
-		y = y + lh + 6
-		p:text(PAD, y, w.desc or "--", T.on_var)
-		local loc_str = fmt_location(w)
+		p:text(W - PAD - 16 - iw, m.hero_y + 14, icon, T.primary_hi)
+		local y2 = m.hero_y + 14 + lh + 8
+		p:text(PAD + 16, y2, wd.desc or "--", T.on_var)
+		local loc_str = fmt_location(wd)
 		local lw = select(1, ctx.get_text_size(loc_str))
-		local dw = select(1, ctx.get_text_size(w.desc or "--"))
-		if lw <= W - PAD * 2 - dw - 24 then
-			p:text(W - PAD - lw, y, loc_str, T.hint)
-		end
-
-		y = y + lh + 18
-		p:rect(PAD, y - 10, W - PAD * 2, 1, T.outline)
-
-		local col_w = math.floor((W - PAD * 2) / 3)
-		local cells = {
-			{ I.t("feels"), string.format("%d°", math.floor(w.feels)) },
-			{ I.t("humidity"), string.format("%d%%", math.floor(w.humidity)) },
-			{ I.t("wind"), fmt_wind(w) },
-		}
-		for i, c in ipairs(cells) do
-			local cx = PAD + (i - 1) * col_w
-			p:text(cx, y, c[1], T.hint)
-			p:text(cx, y + lh + 4, c[2], T.on_surface)
+		local dw = select(1, ctx.get_text_size(wd.desc or "--"))
+		if lw <= card_w - 32 - dw - 16 then
+			p:text(W - PAD - 16 - lw, y2, loc_str, T.hint)
 		end
 	else
-		p:text(PAD, y, M.error or I.t("fetching…"), T.hint)
-		y = y + lh + 4
+		p:text(PAD + 16, m.hero_y + 14, M.error or I.t("fetching…"), T.hint)
 		local hint = M.manual_city and I.t("manual city: %s", M.manual_city)
 			or I.t("auto-locate, first fetch ~1-2s")
-		p:text(PAD, y, hint, T.hint)
+		p:text(PAD + 16, m.hero_y + 14 + lh + 8, hint, T.hint)
 	end
 
-	local by = H - lh - 12
-	p:rect(PAD, by - 8, W - PAD * 2, 1, T.outline)
+	-- group title (small hint-coloured text) + detail card rows
+	p:text(PAD + 6, m.group_y + 6, I.t("details"), T.hint)
+	local wd = M.data
+	local cells = {
+		{ I.t("feels"), wd and string.format("%d°", math.floor(wd.feels)) or "--" },
+		{ I.t("humidity"), wd and string.format("%d%%", math.floor(wd.humidity)) or "--" },
+		{ I.t("wind"), fmt_wind(wd) },
+	}
+	for i, c in ipairs(cells) do
+		local y = m.row_y[i]
+		p:rrect(PAD, y, card_w, m.ROW_H, CARD_R, T.surface)
+		local ty = y + math.floor((m.ROW_H - lh) / 2)
+		p:text(PAD + 16, ty, c[1], T.on_var)
+		local vw = select(1, ctx.get_text_size(c[2]))
+		p:text(W - PAD - 16 - vw, ty, c[2], T.hint)
+	end
 
+	-- footer: opaque band + hairline separator (status left, source right)
+	local fy = m.H - m.FOOTER_H
+	p:rect(0, fy, W, m.FOOTER_H, p.bg)
+	p:rect(PAD, fy, W - PAD * 2, 1, T.outline)
+	local mid_y = fy + math.floor((m.FOOTER_H - lh) / 2)
 	local status = M.data and fmt_ago(M.last_update_t) or M.error or I.t("waiting data")
-	p:text(PAD, by, status, T.hint)
-
+	p:text(PAD, mid_y, status, T.hint)
 	local src = "wttr.in"
 	local sw = select(1, ctx.get_text_size(src))
-	p:text(W - PAD - sw, by, src, T.hint)
+	p:text(W - PAD - sw, mid_y, src, T.hint)
+
+	-- header painted LAST: its opaque band clips the content above it
+	p:draw_header(I.t("Weather"), Util.keybind_hint(ctx, "toggle_weather"), PAD)
 end
 
 function M.bar_label()

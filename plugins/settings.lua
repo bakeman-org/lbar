@@ -374,41 +374,68 @@ table.sort(PALETTE_LIGHT)
 
 local POS_CHOICES = { "center", "top", "top_left", "top_right", "bottom", "bottom_left", "bottom_right" }
 
+-- MIUIX-style geometry: rounded card rows, unified side padding, small
+-- hint-coloured group titles in their own band with wide group separation
+local PAD, SB_W = 20, 6
+local ROW_GAP = 8 -- gap between row cards
+local CARD_R = 14 -- row card corner radius
+local GROUP_GAP = 28 -- gap between a card and the next group title
+local SW_W, SW_H = 46, 26 -- pill switch size
+
+local function row_h(lh)
+	return math.max(46, lh + 28)
+end
+
+local function group_h(lh)
+	return lh + 8
+end
+
+-- widen the gap before a group header (rows already carry ROW_GAP)
+local function group_gap(rows, y)
+	if #rows > 0 then
+		y = y + GROUP_GAP - ROW_GAP
+	end
+	return y
+end
+
 local function row_add(rows, y, lh, r)
 	r.y = y
-	r.h = r.h or (lh + 16)
+	r.h = r.h or row_h(lh)
 	r.id = (r.kind or "edit") .. ":" .. table.concat(r.path or {}, ".") .. ":" .. (r.key or r.label or "")
 	rows[#rows + 1] = r
-	return y + r.h
+	return y + r.h + ROW_GAP
 end
 
 local function build_rows(ctx, lh, W, tab)
 	local rows = {}
-	local y = 0
+	local y = 14 -- breathing room under the segmented tab control
 	if tab == "themes" then
-		local CHIP_W = math.floor((W - 40 - 12) / 2)
-		y = row_add(rows, y, lh, { kind = "mode", label = I.t("mode"), h = lh + 18 })
+		local card_w = W - PAD * 2 - SB_W
+		local CHIP_W = math.floor((card_w - 12) / 2)
+		local chip_h = math.max(40, lh + 22)
+		y = row_add(rows, y, lh, { kind = "mode", label = I.t("mode") })
 		for _, grp in ipairs({ { I.t("dark themes"), PALETTE_DARK, "dark" }, { I.t("light themes"), PALETTE_LIGHT, "light" } }) do
-			y = row_add(rows, y, lh, { kind = "group", label = grp[1], h = lh + 10 })
+			y = group_gap(rows, y)
+			y = row_add(rows, y, lh, { kind = "group", label = grp[1], h = group_h(lh) })
 			local col = 0
 			local row_y = y
 			for _, name in ipairs(grp[2]) do
+				local cx = PAD + (col % 2) * (CHIP_W + 12)
+				local cy = row_y + math.floor(col / 2) * (chip_h + 10)
 				rows[#rows + 1] = {
 					kind = "chip", name = name, mode = grp[3],
-					x = 20 + (col % 2) * (CHIP_W + 12),
-					y = row_y + math.floor(col / 2) * (lh + 22),
-					h = lh + 18, w = CHIP_W, id = "chip:" .. grp[3] .. ":" .. name,
+					x = cx, y = cy, h = chip_h, w = CHIP_W, id = "chip:" .. grp[3] .. ":" .. name,
 				}
-				y = math.max(y, row_y + math.floor(col / 2) * (lh + 22) + lh + 18)
+				y = math.max(y, cy + chip_h)
 				col = col + 1
 			end
-			y = y + 12
+			y = y + ROW_GAP
 		end
 	elseif tab == "panels" then
-		y = row_add(rows, y, lh, { kind = "phdr", label = I.t("panels"), h = lh + 8 })
+		y = row_add(rows, y, lh, { kind = "phdr", label = I.t("panels"), h = lh + 12 })
 		local names = {}
 		local seen = {}
-		for _, src in ipairs({ ctx.config.panels or {}, ctx.config.panel_opts or {} }) do
+		for _, src in ipairs({ ctx._panels or {}, ctx.config.panels or {}, ctx.config.panel_opts or {} }) do
 			for k in pairs(src) do
 				if not seen[k] then
 					seen[k] = true
@@ -418,11 +445,12 @@ local function build_rows(ctx, lh, W, tab)
 		end
 		table.sort(names)
 		for _, name in ipairs(names) do
-			y = row_add(rows, y, lh, { kind = "panel", pname = name, label = name, h = lh + 18 })
+			y = row_add(rows, y, lh, { kind = "panel", pname = name, label = name })
 		end
 	else
 		local function group(label)
-			y = row_add(rows, y, lh, { kind = "group", label = label, h = lh + 12 })
+			y = group_gap(rows, y)
+			y = row_add(rows, y, lh, { kind = "group", label = label, h = group_h(lh) })
 		end
 		local function row(path, key, label, kind, extra)
 			local r = { path = path, key = key, label = label, kind = kind or "str" }
@@ -440,28 +468,25 @@ local function build_rows(ctx, lh, W, tab)
 		row({}, "gap", I.t("gap"), "num", { min = 0 })
 		row({}, "bar_margin", I.t("bar margin"), "num", { min = 0 })
 		group(I.t("fonts"))
-		row({}, "font_path", I.t("font path"), "str")
+		row({}, "font_path", I.t("font path"), "str", { pick = "file" })
 		row({}, "font_size", I.t("font size"), "num", { min = 10, max = 32 })
 		row({}, "fallback_font_paths", I.t("fallback fonts (;)"), "list")
 		group(I.t("paths"))
-		row({}, "audio_panel_dir", I.t("music dir"), "str")
-		row({}, "music_state_file", I.t("music state file"), "str")
-		row({ "clock" }, "schedule_file", I.t("schedule file"), "str")
+		row({}, "audio_panel_dir", I.t("music dir"), "str", { pick = "dir" })
+		row({}, "music_state_file", I.t("music state file"), "str", { pick = "file" })
+		row({ "clock" }, "schedule_file", I.t("schedule file"), "str", { pick = "file" })
 		row({}, "lang", I.t("language"), "enum", { choices = { "auto", "en", "zh" } })
 		group(I.t("cpu item"))
-		row({ "cpu" }, "style", I.t("style"), "enum", { choices = { "text", "graph", "both" } })
 		row({ "cpu" }, "interval_ms", I.t("interval ms"), "num", { min = 200 })
-		row({ "cpu" }, "history", I.t("history"), "num", { min = 4, max = 120 })
 		row({ "cpu" }, "color", I.t("color by load"), "bool")
 		group(I.t("mem item"))
-		row({ "mem" }, "style", I.t("style"), "enum", { choices = { "text", "graph", "both" } })
 		row({ "mem" }, "interval_ms", I.t("interval ms"), "num", { min = 200 })
 		row({ "mem" }, "color", I.t("color by load"), "bool")
 		group(I.t("network"))
 		row({ "wifi" }, "interface", I.t("interface"), "str")
 		row({ "wifi" }, "refresh_sec", I.t("refresh sec"), "num", { min = 2 })
 		group(I.t("wallpaper"))
-		row({ "wallpaper" }, "dir", I.t("dir"), "str")
+		row({ "wallpaper" }, "dir", I.t("dir"), "str", { pick = "dir" })
 		row({ "wallpaper" }, "depth", I.t("depth"), "num", { min = 1, max = 8 })
 		row({ "wallpaper" }, "set_cmd", I.t("set cmd ($f)"), "str", { allow_empty_remove = true })
 		group(I.t("power"))
@@ -604,21 +629,60 @@ local function save_panel_opt(name, field, lit, val)
 	end
 end
 
+-- persist a plain string value (used by the file-picker rows); mirrors the
+-- str branch of commit_edit incl. the hot-reload keys
+local function save_str(r, v)
+	if save_value(r.path, r.key, q(v)) then
+		cfg_set(r.path, r.key, v)
+		if HOT_KEYS[r.key] and #(r.path or {}) == 0 then
+			M.ctx.notify(I.t("saved — reloading…"), { style = "info" })
+			defer(function()
+				M.ctx.actions.hot_reload()
+			end)
+		else
+			local need_r = r.path and r.path[1] == "panels"
+			M.ctx.notify(need_r and I.t("saved — reload to apply") or I.t("saved"),
+				{ style = "success", duration = 1500 })
+		end
+	end
+end
+
+-- open the in-house file picker for a path row; selection goes through
+-- the same save path as inline edits
+local function open_picker(r)
+	require("plugins.file_dialog").open(M.ctx, {
+		title = r.label,
+		path = cfg_get(r.path, r.key),
+		kind = r.pick,
+		on_select = function(np)
+			save_str(r, np)
+			redraw_all()
+			-- the dialog replaced this panel (one popup at a time); reopen
+			if M.ctx.show_panel then
+				M.ctx.show_panel("settings")
+			end
+		end,
+	})
+end
+
 -- -------------------------------------------------------------------- draw
 
 local function compute_layout(ctx, lh, us)
-	local m = { lh = lh, PAD = 20 }
+	local m = { lh = lh, PAD = PAD }
 	m.W = 560
 	m.HEADER_H = lh + 26
 	m.TABS_H = lh + 30
 	m.FOOTER_H = lh + 30
+	m.view_y = m.HEADER_H + m.TABS_H
 	if us then
 		m.W = math.max(480, us.w)
 		m.H = math.max(460, us.h)
 	else
-		m.H = math.max(520, math.min(ctx.scr_h * 0.85, 800))
+		-- natural height follows the (roomy) rows of the active tab, capped
+		-- at 85% of the screen; overflow scrolls inside the view
+		local _, ch = build_rows(ctx, lh, m.W, M.tab or "themes")
+		m.H = math.max(520, math.min(ctx.scr_h * 0.85, m.view_y + ch + m.FOOTER_H))
 	end
-	m.view_y = m.HEADER_H + m.TABS_H
 	m.view_h = m.H - m.view_y - m.FOOTER_H
 	return m
 end
@@ -626,11 +690,17 @@ end
 local function val_str(r)
 	local v = cfg_get(r.path, r.key)
 	if v == nil then
-		return "(unset)"
+		return I.t("(unset)")
 	elseif type(v) == "table" then
-		return #v > 0 and table.concat(v, "; ") or "(empty)"
+		return #v > 0 and table.concat(v, "; ") or I.t("(empty)")
 	end
 	return tostring(v)
+end
+
+-- rough char budget for a pixel width (paths are mostly ASCII)
+local function fit_chars(ctx, avail)
+	local cw = select(1, ctx.get_text_size("n"))
+	return math.max(2, math.floor(avail / math.max(4, cw)))
 end
 
 local function do_draw(p)
@@ -644,50 +714,52 @@ local function do_draw(p)
 	-- bottom and footer always match the real panel (no row/overlap drift)
 	m.W, m.H = p.w, p.h
 	m.view_y = m.HEADER_H + m.TABS_H
-	m.view_h = m.H - m.view_y - m.FOOTER_H
-
-	p:draw_header(I.t("settings"), Util.keybind_hint(ctx, "toggle_settings"), PAD)
-
-	-- tab bar
-	local tabs = { { "themes", I.t("themes") }, { "options", I.t("options") }, { "panels", I.t("panels") } }
-	local tw = math.floor((W - PAD * 2 - 16) / 3)
-	for i, t in ipairs(tabs) do
-		local tx = PAD + (i - 1) * (tw + 8)
-		if ui:id_button("tab_" .. t[1], tx, m.HEADER_H + 4, tw, lh + 14, t[2],
-			M.tab == t[1] and { filled = true } or { tonal = true }) then
-			M.tab = t[1]
-			M.scroll = 0
-			cancel_edit(p)
-		end
-	end
+	-- the edit input grows downward when its text wraps: keep it inside the
+	-- footer band (grown below) and shrink the view to stay clear of it
+	local in_extra = p.input and p.input:extra_h() or 0
+	m.view_h = m.H - m.view_y - m.FOOTER_H - in_extra
 
 	-- rows for the active tab (rebuilt each frame; cheap)
 	local rows, content_h = build_rows(ctx, lh, W, M.tab)
 	local maxs = math.max(0, content_h - m.view_h)
 	M.scroll = math.max(0, math.min(maxs, M.scroll))
 
-	-- rows
-	local sb_w = 6
+	-- scrollable content is painted FIRST; the fixed chrome (header, tab
+	-- strip, footer) is painted on top further down, which clips every row
+	-- to the view band without needing a scissor primitive
+	local sb_w = SB_W
+	local CR = W - PAD - sb_w -- card right edge
+	local card_x = PAD
+	local card_w = CR - card_x
+	local sw_x = CR - 16 - SW_W
+	local pos_bw = 130
+	local pos_x = sw_x - 12 - pos_bw
+	local enum_bw = 150
 	M.rows_cache = rows
 	for _, r in ipairs(rows) do
 		local sy = m.view_y + r.y - M.scroll
-		if sy >= m.view_y - r.h and sy + r.h <= m.view_y + m.view_h + 1 then
+		if sy >= m.view_y - r.h and sy <= m.view_y + m.view_h + 1 then
+			local ty = sy + math.floor((r.h - lh) / 2)
+			local swy = sy + math.floor((r.h - SW_H) / 2)
 			if r.kind == "group" then
-				p:text(PAD, sy, r.label, T.hint)
+				p:text(PAD + 6, sy + r.h - lh - 2, r.label, T.hint)
 			elseif r.kind == "phdr" then
-				p:text(PAD, sy, I.t("panel"), T.hint)
-				p:text(W - PAD - 220, sy, I.t("position"), T.hint)
-				p:text(W - PAD - sb_w - 58, sy, I.t("keep open"), T.hint)
+				local hy = sy + r.h - lh - 2
+				p:text(PAD + 6, hy, I.t("panel"), T.hint)
+				local pw = select(1, ctx.get_text_size(I.t("position")))
+				p:text(pos_x + math.floor((pos_bw - pw) / 2), hy, I.t("position"), T.hint)
+				local dw = select(1, ctx.get_text_size(I.t("keep open")))
+				p:text(CR - 16 - dw, hy, I.t("keep open"), T.hint)
 			elseif r.kind == "mode" then
-				local bw = math.floor((W - PAD * 2 - 8) / 2)
+				local bw = math.floor((card_w - 8) / 2)
 				local mode = (ctx.config.theme_mode or "dark") == "light" and "light" or "dark"
-				if ui:id_button("mode_dark", PAD, sy, bw, r.h, I.t("dark mode"),
+				if ui:id_button("mode_dark", card_x, sy, bw, r.h, I.t("dark mode"),
 					mode == "dark" and { filled = true } or { tonal = true }) then
 					if mode ~= "dark" then
 						apply_mode("dark")
 					end
 				end
-				if ui:id_button("mode_light", PAD + bw + 8, sy, bw, r.h, I.t("light mode"),
+				if ui:id_button("mode_light", card_x + bw + 8, sy, card_w - bw - 8, r.h, I.t("light mode"),
 					mode == "light" and { filled = true } or { tonal = true }) then
 					if mode ~= "light" then
 						apply_mode("light")
@@ -702,13 +774,11 @@ local function do_draw(p)
 					save_value({}, r.mode == "light" and "theme_light" or "theme", "'" .. r.name .. "'")
 				end
 			elseif r.kind == "panel" then
-				if ui:hover(PAD - 4, sy, W - PAD * 2 - sb_w + 4, r.h) then
-					p:rrect(PAD - 4, sy, W - PAD * 2 - sb_w + 4, r.h, 8, T.surface_hover)
-				end
-				p:text(PAD, sy + 2, r.pname, T.on_var)
+				local hovered = ui:hover(card_x, sy, card_w, r.h)
+				p:rrect(card_x, sy, card_w, r.h, CARD_R, hovered and T.surface_hover or T.surface)
+				p:text(card_x + 16, ty, r.pname, T.on_var)
 				local pv = ctx.config.panels and ctx.config.panels[r.pname] or {}
 				local pos = pv.pos or "center"
-				local pbw = 150
 				local pi = 1
 				for i2, c in ipairs(POS_CHOICES) do
 					if c == pos then
@@ -716,27 +786,24 @@ local function do_draw(p)
 						break
 					end
 				end
-				if ui:id_button("ppos:" .. r.pname, W - PAD - sb_w - 58 - pbw - 10, sy, pbw, r.h - 4, pos,
+				if ui:id_button("ppos:" .. r.pname, pos_x, sy + 6, pos_bw, r.h - 12, pos,
 					{ tonal = true }) then
 					save_enum({ path = { "panels", r.pname }, key = "pos" }, POS_CHOICES[(pi % #POS_CHOICES) + 1])
 				end
 				local dis = not (ctx.config.panel_opts and ctx.config.panel_opts[r.pname]
 					and ctx.config.panel_opts[r.pname].dismiss_outside == false)
-				local _, changed = ui:toggle("pdis:" .. r.pname, W - PAD - sb_w - 44, sy + 2, 44, 22, dis)
+				local _, changed = ui:toggle("pdis:" .. r.pname, sw_x, swy, SW_W, SW_H, dis)
 				if changed then
 					save_panel_opt(r.pname, "dismiss_outside", nil, not dis)
 				end
 			else
 				-- option rows: bool / enum / num / str / list
-				if r.kind ~= "bool" then
-					if ui:hover(PAD - 4, sy, W - PAD * 2 - sb_w + 4, r.h) then
-						p:rrect(PAD - 4, sy, W - PAD * 2 - sb_w + 4, r.h, 8, T.surface_hover)
-					end
-				end
-				p:text(PAD, sy + 2, r.label, T.on_var)
+				local hovered = r.kind ~= "bool" and ui:hover(card_x, sy, card_w, r.h)
+				p:rrect(card_x, sy, card_w, r.h, CARD_R, hovered and T.surface_hover or T.surface)
+				p:text(card_x + 16, ty, r.label, T.on_var)
 				if r.kind == "bool" then
 					local v = cfg_get(r.path, r.key) == true
-					local _, changed = ui:toggle("tg:" .. r.id, W - PAD - sb_w - 44, sy + 2, 44, 22, v)
+					local _, changed = ui:toggle("tg:" .. r.id, sw_x, swy, SW_W, SW_H, v)
 					if changed then
 						save_bool(r, not v)
 					end
@@ -750,17 +817,33 @@ local function do_draw(p)
 							break
 						end
 					end
-					if ui:id_button("en:" .. r.id, W - PAD - sb_w - 150, sy, 150, r.h - 4,
+					if ui:id_button("en:" .. r.id, CR - 16 - enum_bw, sy + 6, enum_bw, r.h - 12,
 						tostring(cur or choices[1]), { tonal = true }) then
 						save_enum(r, choices[(idx % #choices) + 1])
 					end
 				else
+					-- str / num / list: value right-aligned, truncated to
+					-- the space between the label and the chevron
 					local vs = val_str(r)
+					local lbl_w = select(1, ctx.get_text_size(r.label))
+					local chw = select(1, ctx.get_text_size("›"))
+					local val_right = CR - 16 - chw - 8
+					local avail = val_right - (card_x + 16 + lbl_w + 12)
+					vs = Util.utf8_truncate(vs, fit_chars(ctx, math.max(40, avail)))
 					local vw = select(1, ctx.get_text_size(vs))
-					p:text(W - PAD - sb_w - 16 - vw, sy + 2, vs, T.hint)
-					p:text(W - PAD - sb_w - 10, sy + 2, "›", T.outline_var)
-					if ui:clicked(PAD - 4, sy, W - PAD * 2 - sb_w + 4, r.h) then
-						start_edit(p, r)
+					p:text(val_right - vw, ty, vs, T.hint)
+					p:text(CR - 16 - chw, ty, "›", T.outline_var)
+					if ui:clicked(card_x, sy, card_w, r.h) then
+						if r.pick then
+							-- path row: open the file picker (deferred —
+							-- never create/hide panels mid-draw)
+							local row = r
+							defer(function()
+								open_picker(row)
+							end)
+						else
+							start_edit(p, r)
+						end
 					end
 				end
 			end
@@ -773,31 +856,71 @@ local function do_draw(p)
 		M.scroll = off
 	end
 
-	-- footer
-	local fy = m.H - m.FOOTER_H
-	p:rect(PAD, fy, W - PAD * 2, 1, T.outline)
-	if M.editing then
-		local lbl = M.editing.label or M.editing.key or ""
-		p:text(PAD, fy + 6, I.t("edit %s", lbl), T.hint)
-		local iw = W - PAD * 2 - 200
-		p.input:set_rect(PAD + 90, fy + 4, iw, lh + 8)
-		p.input:draw(p)
-		if ui:id_button("ed_cancel", PAD + 90 + iw + 10, fy + 5, 44, lh + 6, "esc", { tonal = true }) then
+	-- fixed chrome painted last so scrolled content can never overlap it
+
+	-- header: opaque surface fill also covers rows scrolled past the top
+	p:draw_header(I.t("settings"), Util.keybind_hint(ctx, "toggle_settings"), PAD)
+
+	-- tab strip: opaque band over the scroll area, then a MIUI segmented
+	-- control (pill container, raised active segment, primary active text)
+	local fy = m.H - m.FOOTER_H - in_extra
+	p:rect(0, m.HEADER_H, W, m.TABS_H, p.bg)
+	local tabs = { { "themes", I.t("themes") }, { "options", I.t("options") }, { "panels", I.t("panels") } }
+	local seg_h = lh + 18
+	local seg_y = m.HEADER_H + math.floor((m.TABS_H - seg_h) / 2)
+	local seg_w = math.floor((W - PAD * 2) / 3)
+	p:rrect(PAD, seg_y, W - PAD * 2, seg_h, math.floor(seg_h / 2), T.surface_hi)
+	for i, t in ipairs(tabs) do
+		local sx = PAD + (i - 1) * seg_w
+		local sw = i == #tabs and (W - PAD * 2 - seg_w * (#tabs - 1)) or seg_w
+		local active = M.tab == t[1]
+		if active then
+			p:rrect(sx + 3, seg_y + 3, sw - 6, seg_h - 6, math.floor((seg_h - 6) / 2), T.bg)
+		end
+		local tw = select(1, ctx.get_text_size(t[2]))
+		p:text(sx + math.floor((sw - tw) / 2), seg_y + math.floor((seg_h - lh) / 2), t[2],
+			active and T.primary or T.hint)
+		if ui:clicked(sx, seg_y, sw, seg_h) then
+			if M.tab ~= t[1] then
+				M.tab = t[1]
+				M.scroll = 0
+				-- natural height differs per tab: refit from M.tick
+				M.need_fit = true
+			end
 			cancel_edit(p)
 		end
-		if ui:id_button("ed_ok", PAD + 90 + iw + 62, fy + 5, 44, lh + 6, "ok", { filled = true }) then
+	end
+
+	-- footer: opaque band covers rows scrolled past the bottom; pill
+	-- buttons laid out like a MIUI dialog (primary action filled)
+	p:rect(0, fy, W, m.FOOTER_H + in_extra, p.bg)
+	p:rect(PAD, fy, W - PAD * 2, 1, T.outline)
+	local mid_y = fy + math.floor((m.FOOTER_H - lh) / 2)
+	if M.editing then
+		local lbl = M.editing.label or M.editing.key or ""
+		local bh = lh + 12
+		local bo = math.floor((m.FOOTER_H - bh) / 2)
+		p:text(PAD, mid_y, I.t("edit %s", lbl), T.hint)
+		local iw = W - PAD * 2 - 200
+		p.input:set_rect(PAD + 90, fy + bo + 2, iw, lh + 8)
+		p.input:draw(p)
+		if ui:id_button("ed_cancel", PAD + 90 + iw + 10, fy + bo, 44, bh, "esc", { tonal = true }) then
+			cancel_edit(p)
+		end
+		if ui:id_button("ed_ok", PAD + 90 + iw + 62, fy + bo, 44, bh, I.t("ok"), { filled = true }) then
 			commit_edit(p)
 		end
 	else
-		p:text(PAD, fy + 8, I.t("click a value to edit · saved to config.lua"), T.hint)
-		local bw = 64
-		local bh = lh + 8
-		if ui:id_button("ft_reload", W - PAD - bw, fy + 4, bw, bh, I.t("reload"), { tonal = true }) then
+		p:text(PAD, mid_y, I.t("click a value to edit · saved to config.lua"), T.hint)
+		local bw = 72
+		local bh = lh + 14
+		local bo = math.floor((m.FOOTER_H - bh) / 2)
+		if ui:id_button("ft_reload", W - PAD - bw, fy + bo, bw, bh, I.t("reload"), { tonal = true }) then
 			defer(function()
 				ctx.actions.hot_reload()
 			end)
 		end
-		if ui:id_button("ft_close", W - PAD - bw * 2 - 10, fy + 4, bw, bh, I.t("close"), { tonal = true }) then
+		if ui:id_button("ft_close", W - PAD - bw * 2 - 10, fy + bo, bw, bh, I.t("close"), { filled = true }) then
 			defer(function()
 				ctx.actions.close_panels()
 			end)
@@ -814,6 +937,7 @@ function M.init(ctx)
 	M.tab = "themes"
 	M.scroll = 0
 	M.editing = nil
+	M.need_fit = false
 	local panel = Panel.new(ctx, {
 		name = "settings",
 		radius = 16,
@@ -884,6 +1008,12 @@ function M.init(ctx)
 end
 
 function M.tick(ctx, dt)
+	if M.need_fit then
+		M.need_fit = false
+		if M.panel then
+			M.panel:fit()
+		end
+	end
 	if M.pending_action then
 		local fn = M.pending_action
 		M.pending_action = nil
@@ -895,13 +1025,13 @@ function M.tick(ctx, dt)
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size("set")) + 20
+	return select(1, ctx.get_text_size(I.t("settings"))) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)
 	local lh = ctx.get_line_height()
 	local active = ctx.active_plugin_name == "settings" and ctx.popup_visible
-	s:text(x + 10, math.floor((h - lh) / 2), "set", active and ctx.theme.primary or ctx.theme.on_surface)
+	s:text(x + 10, math.floor((h - lh) / 2), I.t("settings"), active and ctx.theme.primary or ctx.theme.on_surface)
 end
 
 function M.on_click(ctx, btn, lx, ly, gx, gw)
@@ -915,6 +1045,7 @@ function M.shutdown()
 	M.panel = nil
 	M.pending_action = nil
 	M.editing = nil
+	M.need_fit = nil
 	M.ctx = nil
 end
 

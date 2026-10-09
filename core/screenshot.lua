@@ -90,9 +90,20 @@ function M.capture(ctx, tag)
 		end
 	else
 		path = string.format("%s/lbar_%s_%s.png", dir, tag, timestamp())
-		local cmd = string.format("grim -g '0,0 %dx%d' '%s' 2>/dev/null", ctx.scr_w, ctx.scr_h, path)
+		if not shell_ok(os.execute("command -v grim >/dev/null 2>&1")) then
+			return nil, "grim not found in PATH (install grim or check PATH)"
+		end
+		-- full-output capture: a fixed -g geometry can lie outside outputs
+		-- (multi-monitor / scaling) and fail; keep stderr for diagnostics
+		local err = "/tmp/lbar-grim.err"
+		local cmd = string.format("grim '%s' 2>'%s'", path, err)
 		if not shell_ok(os.execute(cmd)) then
-			return nil, "grim failed (wayland needs grim)"
+			local f = io.open(err, "r")
+			local msg = f and f:read("*l") or ""
+			if f then
+				f:close()
+			end
+			return nil, "grim failed: " .. (msg ~= "" and msg or "exit error")
 		end
 	end
 	clip_copy(path)

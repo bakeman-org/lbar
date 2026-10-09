@@ -2,6 +2,9 @@
 -- setter auto-detect: swww (wayland, daemon auto-started) > swaybg (sway)
 -- > hyprpaper (hyprland) > feh > nitrogen > xwallpaper (X11 / i3),
 -- or force via config.wallpaper.set_cmd with $f placeholder
+
+-- TODO: notice this tool require hyprpaper running when using hyprland
+
 local M = {}
 local Panel = require("core.panel")
 local Util = require("core.util")

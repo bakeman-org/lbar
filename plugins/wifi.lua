@@ -176,6 +176,72 @@ local function async_refresh(ctx, rescan)
 	end
 end
 
+-- fast status poll (bar ssid/signal): same cached wifi-list query as the
+-- scan's C section, NO rescan — keeps the bar fresh at ~2s while the full
+-- network list rescan stays on opts.refresh_sec
+local function status_async()
+	if M.sjob then
+		return
+	end
+	local tmp = string.format("/tmp/lbar-wifi-st-%d-%d", os.time(), math.random(10000))
+	local ifsel
+	if opts.iface ~= "auto" then
+		ifsel = "IF=" .. shq(opts.iface)
+	else
+		ifsel = table.concat({
+			"IF=$(nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | awk -F: '$2==\"wifi\" && $3 ~ /connected/ {print $1; exit}')",
+			"[ -n \"$IF\" ] || IF=$(nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | awk -F: '$2==\"wifi\" {print $1; exit}')",
+		}, "\n")
+	end
+	local script = table.concat({
+		"(",
+		ifsel,
+		"echo R",
+		"nmcli radio wifi",
+		"echo I",
+		"echo \"$IF\"",
+		"if [ -n \"$IF\" ]; then",
+		"echo C",
+		"nmcli -g IN-USE,SIGNAL,SSID device wifi list ifname \"$IF\"",
+		"fi",
+		"echo DONE",
+		string.format(") > %s 2>&1 &", shq(tmp)),
+	}, "\n")
+	os.execute(script)
+	M.sjob = { path = tmp, acc = 0, total = 0 }
+end
+
+-- parse status job output (R/I/C sections only) and refresh the bar string
+local function apply_status(ctx, content)
+	local radio, iface, cur_ssid, cur_sig
+	local section
+	for line in (content .. "\n"):gmatch("([^\n]*)\n") do
+		if line == "DONE" then
+			break
+		elseif line == "R" or line == "I" or line == "C" then
+			section = line
+		elseif section == "R" then
+			radio = line:find("enabled", 1, true) ~= nil
+		elseif section == "I" then
+			iface = line ~= "" and line or nil
+		elseif section == "C" then
+			local f = split_esc(line)
+			if f[1] == "*" then
+				cur_ssid = (f[3] ~= "" and f[3] ~= "--") and f[3] or nil
+				cur_sig = tonumber(f[2])
+			end
+		end
+	end
+	M.radio = radio == true
+	M.iface = M.radio and iface or nil
+	M.ssid, M.signal = cur_ssid, cur_sig
+	local old = M._str
+	update_str()
+	if M._str ~= old and ctx.bar then
+		ctx.bar.needs_redraw = true	-- redraw only when displayed text changed
+	end
+end
+
 -- connect runs in the background (nmcli can block 5-20s); result is polled
 -- from a temp file in tick so the UI never freezes
 local function connect_async(ctx, net, pw)
@@ -193,9 +259,12 @@ local function connect_async(ctx, net, pw)
 end
 
 local function toggle_radio(ctx)
-	os.execute("nmcli radio wifi " .. (M.radio and "off" or "on") .. " >/dev/null 2>&1")
+	os.execute("nmcli radio wifi " .. (M.radio and "off" or "on") .. " >/dev/null 2>&1 &")
 	M.radio = not M.radio
 	update_str()
+	if ctx.bar then
+		ctx.bar.needs_redraw = true
+	end
 	async_refresh(ctx)
 end
 
@@ -208,39 +277,37 @@ local function disconnect(ctx)
 	ctx.notify(I.t("disconnected"), { style = "info" })
 end
 
+-- vertical rhythm: 12px between sections, cards at radius 12, >= 16px
+-- bottom margin below the footer row (fixed = everything above the list)
 local function compute_layout(ctx, lh)
 	local m = { lh = lh, PAD = 20 }
 	m.W = 480
 	m.HEADER_H = lh + 26
 	m.STATUS_H = lh * 2 + 20
-	m.BTN_H = lh + 12
-	m.ROW_H = lh + 14
-	m.FOOTER_H = lh + 10
+	m.BTN_H = lh + 14
+	m.SECT_H = lh + 12
+	m.ROW_H = lh + 22
+	m.FOOTER_H = lh + 24
+	m.BOT_MARGIN = 16
+	m.fixed = m.HEADER_H + 12 + m.STATUS_H + 12 + m.BTN_H + 12
+		+ m.SECT_H + 12 + m.FOOTER_H + m.BOT_MARGIN
 	local want_h = math.min(math.floor(ctx.scr_h * 0.7), 620)
 	if want_h < 380 then
 		want_h = 380
 	end
-	m.VROWS = math.max(3, math.floor((want_h - m.HEADER_H - m.STATUS_H - m.BTN_H - 24 - m.FOOTER_H) / m.ROW_H))
-	m.H = m.HEADER_H + m.STATUS_H + 12 + m.BTN_H + 14 + m.VROWS * m.ROW_H + m.FOOTER_H + 10
+	m.VROWS = math.max(3, math.floor((want_h - m.fixed) / m.ROW_H))
+	m.H = m.fixed + m.VROWS * m.ROW_H
 	m.rect_list = { x = 0, y = 0, w = 0, h = 0 }
 	return m
 end
 
-local function sig_bars(p, x, y, sig, T)
-	local tiers = { { w = 2, h = 3 }, { w = 2, h = 6 }, { w = 2, h = 9 }, { w = 2, h = 12 } }
-	local active = sig >= 75 and 4 or sig >= 50 and 3 or sig >= 25 and 2 or 1
-	local col = sig >= 70 and T.good or sig >= 40 and T.warn or T.crit
-	local bx = x
-	for i, b in ipairs(tiers) do
-		local by = y + 12 - b.h
-		if i <= active then
-			p:rrect(bx, by, b.w, b.h, 1, col)
-		else
-			p:rrect(bx, by, b.w, b.h, 1, T.outline)
-		end
-		bx = bx + b.w + 1
-	end
-	return bx
+-- signal strength mini-bar: fill scales with %, color tiers
+-- (>=70 primary, >=40 warn, weak crit); dim track behind it
+local function sig_pill(p, x, y, w, sig, T)
+	sig = sig or 0
+	local col = sig >= 70 and T.primary or sig >= 40 and T.warn or T.crit
+	p:rrect(x, y, w, 5, 2, T.outline)
+	p:rrect(x, y, math.max(3, math.floor(w * sig / 100)), 5, 2, col)
 end
 
 local function do_draw(p)
@@ -251,14 +318,16 @@ local function do_draw(p)
 	-- self-heal: model follows the live surface size (user resize) so list
 	-- rows and the footer always match the real panel
 	m.W, m.H = p.w, p.h
-	m.VROWS = math.max(3, math.floor(
-		(m.H - m.HEADER_H - m.STATUS_H - m.BTN_H - 24 - m.FOOTER_H - 10) / m.ROW_H))
+	-- the password input grows downward when text wraps; the footer card
+	-- grows with it below (Panel:fit adds the same growth to the panel)
+	local in_extra = p.input and p.input:extra_h() or 0
+	m.VROWS = math.max(3, math.floor((m.H - m.fixed - in_extra) / m.ROW_H))
 	local lh, PAD, W = m.lh, m.PAD, m.W
 
 	p:draw_header(I.t("wifi"), Util.keybind_hint(ctx, "toggle_wifi"), PAD)
 
-	-- status card
-	local cy = m.HEADER_H + 8
+	-- connection card
+	local cy = m.HEADER_H + 12
 	p:rrect(PAD, cy, W - PAD * 2, m.STATUS_H, 12, T.surface)
 	local sx = PAD + 16
 	local sy = cy + 10
@@ -274,7 +343,7 @@ local function do_draw(p)
 		p:text(sx, sy + lh + 4, M.iface and I.t("%s · no network", M.iface) or I.t("no wifi device"), T.hint)
 	end
 	if M.radio and M.ssid then
-		sig_bars(p, W - PAD - 40, sy + 2, M.signal or 0, T)
+		sig_pill(p, W - PAD - 16 - 30, sy + math.floor((lh - 5) / 2), 30, M.signal or 0, T)
 	end
 
 	-- action buttons
@@ -291,8 +360,17 @@ local function do_draw(p)
 		async_refresh(ctx, true)
 	end
 
-	-- network list (scrollbar lives outside the list area)
-	local ly = by + m.BTN_H + 14
+	-- list section title
+	local ty = by + m.BTN_H + 12
+	p:text(PAD + 4, ty, I.t("wifi networks"), T.hint)
+	if M.scanning then
+		local s = I.t("scanning…")
+		local sw = select(1, ctx.get_text_size(s))
+		p:text(W - PAD - 4 - sw, ty, s, T.hint)
+	end
+
+	-- network list (radius-12 row cards; scrollbar lives outside the list)
+	local ly = ty + m.SECT_H
 	local list_w = W - PAD * 2 - 14
 	m.rect_list.x = PAD
 	m.rect_list.y = ly
@@ -302,7 +380,7 @@ local function do_draw(p)
 	if #M.nets == 0 then
 		local msg = M.job and I.t("scanning…")
 			or (M.radio and I.t("no networks — try rescan") or I.t("wifi disabled"))
-		p:text(PAD + 8, ly + 6, msg, T.hint)
+		p:text(PAD + 12, ly + math.floor((m.ROW_H - lh) / 2), msg, T.hint)
 	end
 	for i = 0, m.VROWS - 1 do
 		local idx = M.scroll + i + 1
@@ -311,15 +389,16 @@ local function do_draw(p)
 		end
 		local net = M.nets[idx]
 		local ry = ly + i * m.ROW_H
-		if ui:hover(PAD - 4, ry, list_w + 8, m.ROW_H) or net.active then
-			p:rrect(PAD - 4, ry, list_w + 8, m.ROW_H, 8, net.active and T.secondary_ctr or T.surface_hover)
-		end
+		local hovered = ui:hover(PAD, ry, list_w, m.ROW_H)
+		local bg = (net.active or hovered) and T.surface_hi or T.surface
+		p:rrect(PAD, ry + 3, list_w, m.ROW_H - 6, 12, bg)
+		local text_y = ry + math.floor((m.ROW_H - lh) / 2)
 		local pct_s = tostring(net.signal) .. "%"
 		local pct_w = select(1, ctx.get_text_size(pct_s))
-		local pct_x = PAD + list_w - pct_w
-		local bars_x = pct_x - 34
-		local lock_x = bars_x - 14
-		local name_max = lock_x - (PAD + 8) - 12
+		local pct_x = PAD + list_w - 12 - pct_w
+		local pill_x = pct_x - 10 - 28
+		local lock_x = pill_x - 12
+		local name_max = lock_x - (PAD + 12) - 12
 		local name = net.ssid
 		if select(1, ctx.get_text_size(name)) > name_max then
 			while #name > 4 and select(1, ctx.get_text_size(name .. "…")) > name_max do
@@ -327,12 +406,12 @@ local function do_draw(p)
 			end
 			name = name .. "…"
 		end
-		p:text(PAD + 4, ry + 5, name, net.active and T.on_surface or T.on_var)
+		p:text(PAD + 12, text_y, name, net.active and T.on_surface or T.on_var)
 		if net.sec then
-			p:text(lock_x, ry + 5, "*", T.hint)
+			p:text(lock_x, text_y, "*", T.hint)
 		end
-		sig_bars(p, bars_x, ry + 3, net.signal, T)
-		p:text(pct_x, ry + 5, pct_s, T.hint)
+		sig_pill(p, pill_x, text_y + math.floor((lh - 5) / 2), 28, net.signal, T)
+		p:text(pct_x, text_y, pct_s, T.hint)
 	end
 	if #M.nets > m.VROWS then
 		local maxs = #M.nets - m.VROWS
@@ -340,27 +419,32 @@ local function do_draw(p)
 		M.scroll = off
 	end
 
-	-- password footer
-	local fy = m.H - m.FOOTER_H
-	p:rect(PAD, fy - 6, W - PAD * 2, 1, T.outline)
+	-- footer: password row inside a radius-12 card, >= 16px bottom margin
+	local fy = m.H - m.BOT_MARGIN - m.FOOTER_H - in_extra
 	if M.pending then
-		local iw = W - PAD * 2 - 120
-		p.input:set_rect(PAD, fy + 2, iw, lh + 6)
+		p:rrect(PAD, fy, W - PAD * 2, m.FOOTER_H + in_extra, 12, T.surface)
+		local inner_x = PAD + 12
+		local btn_w = 56
+		local iw = (W - PAD * 2 - 24) - btn_w * 2 - 16
+		local row_h = lh + 10
+		local row_y = fy + math.floor((m.FOOTER_H - row_h) / 2)
+		p.input:set_rect(inner_x, row_y, iw, row_h)
 		p.input:draw(p)
-		if ui:id_button("wf_cancel", PAD + iw + 12, fy + 3, 50, lh + 4, "esc", { tonal = true }) then
+		if ui:id_button("wf_cancel", inner_x + iw + 8, row_y, btn_w, row_h, "esc", { tonal = true }) then
 			M.pending = nil
 			p.input:blur()
 			p.input:set_value("")
 		end
-		if ui:id_button("wf_conn", PAD + iw + 70, fy + 3, 50, lh + 4, I.t("ok"), { filled = true }) then
+		if ui:id_button("wf_conn", inner_x + iw + 8 + btn_w + 8, row_y, btn_w, row_h, I.t("ok"), { filled = true }) then
 			connect_async(ctx, M.pending, p.input.value)
 			M.pending = nil
 			p.input:blur()
 			p.input:set_value("")
 		end
 	else
-		p.input:set_rect(-9999, -9999, 10, 10)
-		p:text(PAD, fy + 4, I.t("click network to connect · secured asks password"), T.hint)
+		p.input:set_rect(-9999, -9999, 400, 10)
+		p:text(PAD, fy + math.floor((m.FOOTER_H - lh) / 2),
+			I.t("click network to connect · secured asks password"), T.hint)
 	end
 end
 
@@ -373,6 +457,8 @@ function M.init(ctx)
 	M._str = M._str or I.t("wifi -")
 	M.radio = nil
 	M.refresh_acc = 0
+	M.status_acc = 2000	-- first fast status poll right away
+	M.sjob = nil
 	local panel = Panel.new(ctx, {
 		name = "wifi",
 		radius = 16,
@@ -381,8 +467,8 @@ function M.init(ctx)
 			local m = compute_layout(c, c.get_line_height())
 			if us then
 				m.W = math.max(380, us.w)
-				m.VROWS = math.max(3, math.floor((us.h - m.HEADER_H - m.STATUS_H - m.BTN_H - 24 - m.FOOTER_H - 10) / m.ROW_H))
-				m.H = m.HEADER_H + m.STATUS_H + 12 + m.BTN_H + 14 + m.VROWS * m.ROW_H + m.FOOTER_H + 10
+				m.VROWS = math.max(3, math.floor((us.h - m.fixed) / m.ROW_H))
+				m.H = m.fixed + m.VROWS * m.ROW_H
 			end
 			return m
 		end,
@@ -391,8 +477,8 @@ function M.init(ctx)
 			local n = M.nets and #M.nets or 0
 			if n > 0 and n < m.VROWS then
 				m.VROWS = n
-				m.H = m.HEADER_H + m.STATUS_H + 12 + m.BTN_H + 14 + m.VROWS * m.ROW_H + m.FOOTER_H + 10
 			end
+			m.H = m.fixed + m.VROWS * m.ROW_H
 			return m.W, m.H
 		end,
 		draw = do_draw,
@@ -535,6 +621,7 @@ function M.tick(ctx, dt)
 					os.remove(j.path)
 					M.job = nil
 					M.scanning = false
+					local old = M._str
 					apply_scan(content)
 					if M.panel then
 						M.panel:fit() -- auto-fit to list length
@@ -542,7 +629,7 @@ function M.tick(ctx, dt)
 					if M.panel and M.panel.visible then
 						M.panel:draw()
 					end
-					if ctx.bar then
+					if ctx.bar and M._str ~= old then
 						ctx.bar.needs_redraw = true
 					end
 				end
@@ -581,6 +668,37 @@ function M.tick(ctx, dt)
 				cc.wait = 500
 			end
 		end
+	end
+	-- poll background status job (fast bar cadence, no rescan)
+	if M.sjob then
+		local sj = M.sjob
+		sj.total = sj.total + dt
+		sj.acc = sj.acc + dt
+		if sj.acc >= 400 then
+			sj.acc = 0
+			local f = io.open(sj.path, "r")
+			if f then
+				local content = f:read("*a")
+				f:close()
+				if content:find("DONE", 1, true) then
+					os.remove(sj.path)
+					M.sjob = nil
+					apply_status(ctx, content)
+				end
+			end
+		end
+		if M.sjob and M.sjob.total > 15000 then
+			os.remove(sj.path)
+			M.sjob = nil
+			log("status timeout")
+		end
+	end
+	-- status cadence: ~2s keeps the bar realtime; full rescan below keeps
+	-- opts.refresh_sec
+	M.status_acc = (M.status_acc or 0) + dt
+	if M.status_acc >= 2000 then
+		M.status_acc = 0
+		status_async()
 	end
 	-- periodic refresh: async only, never blocks the main loop
 	local interval = (M.panel and M.panel.visible) and opts.refresh_sec * 1000 or 60000

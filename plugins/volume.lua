@@ -59,6 +59,9 @@ local function toggle_mute(ctx)
 	if ctx.bar then
 		ctx.bar.needs_redraw = true
 	end
+	if ctx.notify then
+		ctx.notify(I.t(mute and "muted" or "unmuted"), { style = "info" })
+	end
 end
 
 local function str()
@@ -68,11 +71,18 @@ local function str()
 	return mute and I.t("MUTE") or I.t("VOL %d%%", vol)
 end
 
+-- MIUIX-style geometry: card rows on the panel background, footer band
+-- with pill buttons; natural height follows the content rows (capped at
+-- 85% of the screen)
 local function compute_layout(ctx, lh)
-	local m = { lh = lh, PAD = 20 }
+	local m = { lh = lh, PAD = 20, CARD_R = 14, ROW_GAP = 8 }
 	m.W = 380
 	m.HEADER_H = lh + 26
-	m.H = m.HEADER_H + (lh + 30) * 2 + 60 + 20
+	m.ROW_H = math.max(46, lh + 28)
+	m.HERO_H = lh + 44
+	m.FOOTER_H = lh + 30
+	local H = m.HEADER_H + 16 + m.HERO_H + m.ROW_GAP + m.ROW_H + m.ROW_GAP + m.ROW_H + 16 + m.FOOTER_H
+	m.H = math.min(math.floor(ctx.scr_h * 0.85), H)
 	return m
 end
 
@@ -83,44 +93,65 @@ local function do_draw(p)
 	local T = ctx.theme
 	m.W, m.H = p.w, p.h
 	local lh, PAD, W = m.lh, m.PAD, m.W
+	local card_w = W - PAD * 2
 
-	p:draw_header(I.t("volume"), Util.keybind_hint(ctx, "toggle_volume"), PAD)
+	-- scrollable content is painted FIRST; the fixed chrome (footer, header)
+	-- is painted on top further down, which clips it without a scissor
 
-	local y = m.HEADER_H + 18
+	-- hero card: big percentage, crit-coloured while muted
+	local y = m.HEADER_H + 16
+	p:rrect(PAD, y, card_w, m.HERO_H, m.CARD_R, T.surface)
 	local big = string.format("%d%%", vol)
 	local big_w = select(1, ctx.get_text_size(big))
 	local big_col = mute and T.crit or T.primary
-	p:text(math.floor((W - big_w) / 2), y, big, big_col)
-	y = y + lh + 14
+	p:text(math.floor((W - big_w) / 2), y + math.floor((m.HERO_H - lh) / 2), big, big_col)
+	y = y + m.HERO_H + m.ROW_GAP
 
-	local sw = W - PAD * 2
-	local v, changed = ui:slider("vol_slider", PAD, y, sw, vol, { min = 0, max = 100 })
+	-- slider row card
+	p:rrect(PAD, y, card_w, m.ROW_H, m.CARD_R, T.surface)
+	local sw = card_w - 32
+	local v, changed = ui:slider("vol_slider", PAD + 16, y + math.floor(m.ROW_H / 2), sw, vol, { min = 0, max = 100 })
 	if changed then
 		pending_vol = v
 		pending_wait = 150
 	end
-	y = y + 34
+	y = y + m.ROW_H + m.ROW_GAP
 
-	if ui:id_button("vol_dn", PAD, y, 54, lh + 12, "-", { tonal = true }) then
+	-- mute row card: label + material pill switch (46x26)
+	p:rrect(PAD, y, card_w, m.ROW_H, m.CARD_R, T.surface)
+	local mstr = I.t(mute and "muted" or "mute")
+	p:text(PAD + 16, y + math.floor((m.ROW_H - lh) / 2), mstr, mute and T.crit or T.on_var)
+	local _, mchanged = ui:toggle("vol_mute", PAD + card_w - 16 - 46, y + math.floor((m.ROW_H - 26) / 2), 46, 26, not mute)
+	if mchanged then
+		toggle_mute(ctx)
+	end
+
+	-- footer: opaque band covers rows scrolled past the bottom; pill
+	-- buttons laid out like a MIUI dialog
+	local fy = m.H - m.FOOTER_H
+	p:rect(0, fy, W, m.FOOTER_H, p.bg)
+	p:rect(PAD, fy, W - PAD * 2, 1, T.outline)
+	local bh = lh + 14
+	local bo = fy + math.floor((m.FOOTER_H - bh) / 2)
+	local bw = 72
+	local bx = math.floor((W - (bw * 2 + 10)) / 2)
+	if ui:id_button("vol_dn", bx, bo, bw, bh, "-5", { tonal = true, bg = T.surface_hi }) then
 		pending_vol = nil
 		set_vol(vol - 5)
 		if ctx.bar then
 			ctx.bar.needs_redraw = true
 		end
 	end
-	if ui:id_button("vol_up", PAD + 64, y, 54, lh + 12, "+", { tonal = true }) then
+	if ui:id_button("vol_up", bx + bw + 10, bo, bw, bh, "+5", { tonal = true, bg = T.surface_hi }) then
 		pending_vol = nil
 		set_vol(vol + 5)
 		if ctx.bar then
 			ctx.bar.needs_redraw = true
 		end
 	end
-	local _, mchanged = ui:toggle("vol_mute", W - PAD - 100, y + 4, 44, 22, not mute)
-	if mchanged then
-		toggle_mute(ctx)
-	end
-	local mstr = mute and I.t("muted") or I.t("mute")
-	p:text(W - PAD - select(1, ctx.get_text_size(mstr)), y + 2, mstr, T.on_var)
+
+	-- header LAST: opaque band covers anything painted under it
+	p:draw_header(I.t("volume"), Util.keybind_hint(ctx, "toggle_volume"), PAD)
 end
 
 function M.init(ctx)

@@ -3,15 +3,15 @@ return {
     height   = 'auto',
     -- height   = 1002,
     padding  = 16,
-    gap      = 10,
+    gap      = 2,
     bar_margin = 8,
 
     -- builtin themes: md3_dark md3_light one_dark one_light gruvbox_dark gruvbox_light
     -- nord catppuccin_mocha catppuccin_latte tokyo_night tokyo_night_day
     -- solarized_dark solarized_light
     theme       = 'nord',
-    theme_light = 'one_light',
-    theme_mode  = 'light',
+    theme_light = 'catppuccin_latte',
+    theme_mode  = 'dark',
 
     -- UI language: 'auto' (detect from $LANG) | 'en' | 'zh'
     lang = 'zh',
@@ -28,23 +28,20 @@ return {
     music_state_file = os.getenv('HOME') .. '/.local/state/lbar/music.conf',
 
     plugins = {
-        'logo', 'cpu', 'mem', 'battery', 'volume', 'clock',
+        'logo', 'workspace', 'cpu', 'mem', 'battery', 'volume', 'clock',
         'keybinds_help', 'launcher', 'clip_hist', 'pomodoro',
         'music_player', 'weather', 'sysinfo', 'sysmon',
         'color_picker', 'ui_demo', 'hide_all',
         'move_window', 'resize_window',
-        'settings', 'wallpaper', 'wifi', 'power',
+        'settings', 'wallpaper', 'wifi',
     },
 
-    -- cpu/mem bar item styles: 'text' | 'graph' | 'both'
+    -- cpu/mem bar items are compact text labels colored by load
     cpu = {
-        style = 'both',
         interval_ms = 1000,
-        history = 24,          -- sparkline samples in bar item
         color = true,          -- color by load (good/warn/crit)
     },
     mem = {
-        style = 'both',
         interval_ms = 2000,
         color = true,
     },
@@ -60,7 +57,7 @@ return {
         -- set_cmd = 'swww img "$f"',  -- force a custom setter ($f = file path)
     },
 
-    power = {
+    battery = {
         lock_cmd = 'swaylock -f',
         -- logout_cmd = 'niri msg action quit',  -- auto: niri/hyprland/sway
         confirm = true,        -- ask before logout/sleep/reboot/poweroff
@@ -70,16 +67,16 @@ return {
     -- per-panel scope: dismiss_outside = false keeps the panel open when
     -- clicking outside it (outside clicks pass through to other apps)
     panel_opts = {
-        launcher = { dismiss_outside = false },
-        sysmon = { dismiss_outside = false },
-        music_player = { dismiss_outside = false },
-        color_picker = { dismiss_outside = false },
-        sysinfo = { dismiss_outside = false },
-        settings = { dismiss_outside = false },
-        wallpaper = { dismiss_outside = false },
-        wifi = { dismiss_outside = false },
-        power = { dismiss_outside = false },
-        volume = { dismiss_outside = false },
+        launcher = { dismiss_outside = true },
+        sysmon = { dismiss_outside = true },
+        music_player = { dismiss_outside = true },
+        color_picker = { dismiss_outside = true },
+        sysinfo = { dismiss_outside = true },
+        settings = { dismiss_outside = true },
+        wallpaper = { dismiss_outside = true },
+        wifi = { dismiss_outside = true },
+        battery = { dismiss_outside = true },
+        volume = { dismiss_outside = true },
     },
 
     -- same keybinds as xpet
@@ -114,8 +111,8 @@ return {
           group = 'panels', desc = 'wallpaper picker' },
         { mod = 'ctrl+alt', key = 'n', action = 'toggle_wifi',
           group = 'panels', desc = 'wifi networks' },
-        { mod = 'ctrl+alt', key = 'o', action = 'toggle_power',
-          group = 'panels', desc = 'power menu' },
+        { mod = 'ctrl+alt', key = 'o', action = 'toggle_battery',
+          group = 'panels', desc = 'battery + power menu' },
         { mod = 'ctrl+alt', key = 'k', action = 'toggle_theme',
           group = 'system', desc = 'toggle dark / light theme' },
         { mod = 'ctrl+alt+shift', key = 's', action = 'debug_dump_panel',
@@ -170,11 +167,11 @@ return {
         settings       = { pos = 'center', anim = 'auto' },
         wallpaper      = { pos = 'center', anim = 'auto' },
         wifi           = { pos = 'top_right', anim = 'auto' },
-        power          = { pos = 'center', anim = 'auto' },
+        battery        = { pos = 'top_left', anim = 'auto' },
     },
 
     pomodoro = {
-        work_min = 25,
+        work_min = 15,
         break_min = 5,
     },
 
@@ -210,6 +207,7 @@ return {
     },
 
     resize_window = {
-        step = 30,
+        step = 50,
     },
+    power = { confirm = true },
 }

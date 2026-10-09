@@ -115,6 +115,11 @@ local ctx = {
 	popup_visible = false,
 	active_plugin_name = nil,
 	active_panel = nil,
+	_kbd_id = nil,
+	_ime_on = false,
+	_ptr_id = nil,
+	_drag_panel = nil,
+	_press_panel = nil,
 	debug = false,
 	lbar_dir = SCRIPT_DIR,
 }
@@ -146,19 +151,85 @@ function ctx.register_panel(name, panel)
 	end
 end
 
-function ctx.show_panel(name, anchor_x, anchor_y, direction, align)
-	for n, p in pairs(panels) do
-		if n ~= name and p.visible then
-			p:hide(true)
+-- ── multi-panel support ──
+-- several panels can be visible at once; exactly one of them is "active"
+-- (the last clicked/shown one) and owns the exclusive keyboard grab. these
+-- syncs are the single authority for grab ownership on both backends.
+
+function ctx.sync_kbd()
+	local p = ctx.active_panel
+	local want = p and p.visible and not p.destroyed and p:kbd_wanted()
+	if want then
+		if ctx._kbd_id ~= p.id then
+			ctx.L.lbar_kbd_grab(ctx.Lctx, p.id)
+			ctx._kbd_id = p.id
+		end
+	elseif ctx._kbd_id then
+		ctx.L.lbar_kbd_ungrab(ctx.Lctx)
+		ctx._kbd_id = nil
+	end
+	-- wayland IME (zwp_text_input_v3): enabled while the active panel's text
+	-- input holds focus; no-ops on X11 or without the manager
+	local ime = want and p.input and p.input.focused
+	if ime and not ctx._ime_on then
+		ctx._ime_on = true
+		local r = p.input
+		ctx.L.lbar_ti_enable(ctx.Lctx, r.x or 0, r.y or 0, r.w or 0, r.h or 0)
+	elseif not ime and ctx._ime_on then
+		ctx._ime_on = false
+		ctx.L.lbar_ti_disable(ctx.Lctx)
+	end
+	-- the focused panel owns the keyboard: blur inputs everywhere else
+	for _, q in pairs(panels) do
+		if q ~= p then
+			if q.input and q.input.focused then
+				q.input:blur()
+			end
+			if q.ui and q.ui.any_focus and q.ui:any_focus() and q.ui.blur_input then
+				q.ui:blur_input()
+			end
 		end
 	end
+end
+
+-- X11 only: one pointer grab is needed so presses outside every panel are
+-- still delivered (dismiss-on-outside-click). on wayland the compositor
+-- routes pointer events natively, so this is a no-op there.
+function ctx.sync_ptr_grab()
+	if ctx.backend_kind == "wayland" then
+		return
+	end
+	local holder = nil
+	local p = ctx.active_panel
+	if p and p.visible and not p.destroyed and p.opts.ptr_grab ~= false then
+		holder = p
+	end
+	if not holder then
+		for _, q in pairs(panels) do
+			if q.visible and not q.destroyed and q.opts.ptr_grab ~= false then
+				holder = q
+				break
+			end
+		end
+	end
+	local hid = holder and holder.id or nil
+	if hid ~= ctx._ptr_id then
+		if hid then
+			ctx.L.lbar_ptr_grab(ctx.Lctx, hid)
+		else
+			ctx.L.lbar_ptr_ungrab(ctx.Lctx)
+		end
+		ctx._ptr_id = hid
+	end
+end
+
+function ctx.show_panel(name, anchor_x, anchor_y, direction, align)
 	local p = panels[name]
 	if not p then
 		return
 	end
 	if p.visible then
 		p:hide()
-		ctx.active_plugin_name = nil
 		if ctx.bar then
 			ctx.bar.needs_redraw = true
 		end
@@ -169,8 +240,7 @@ function ctx.show_panel(name, anchor_x, anchor_y, direction, align)
 	else
 		p:show()
 	end
-	ctx.active_panel = p
-	ctx.active_plugin_name = name
+	-- other panels stay visible (multi-panel); focus moved to this one
 	if ctx.bar then
 		ctx.bar.needs_redraw = true
 	end
@@ -274,6 +344,12 @@ local function reload_all()
 	end
 	ctx._panels = {}
 	panels = {}
+	ctx._panel_by_id = {}
+	ctx._kbd_id = nil
+	ctx._ptr_id = nil
+	ctx._ime_on = false
+	ctx._drag_panel = nil
+	ctx._press_panel = nil
 
 	config = newcfg
 	ctx.config = config
@@ -329,8 +405,33 @@ actions.toggle_auto_reload = function()
 	ctx.auto_reload = auto_reload
 	ctx.notify(I18n.t(auto_reload and "auto reload on" or "auto reload off"), { style = "info" })
 end
+-- ctrl+alt+d: toggle all panels hide/show (reopens the panels that were
+-- visible when they were hidden)
+local hidden_restore = nil
 actions.hide_all_windows = function()
-	ctx.close_panels()
+	local any = false
+	local names = {}
+	for name, p in pairs(panels) do
+		if p.visible and not p.destroyed then
+			any = true
+			names[#names + 1] = name
+		end
+	end
+	if any then
+		hidden_restore = names
+		ctx.close_panels()
+		ctx.notify(I18n.t("panels hidden"), { style = "info" })
+	else
+		if not hidden_restore or #hidden_restore == 0 then
+			ctx.notify(I18n.t("no panels to show"), { style = "info" })
+			return
+		end
+		for _, name in ipairs(hidden_restore) do
+			ctx.show_panel(name)
+		end
+		hidden_restore = nil
+		ctx.notify(I18n.t("panels shown"), { style = "info" })
+	end
 end
 
 local function save_theme_mode(mode)
@@ -457,17 +558,63 @@ local watch_accum = 0
 local last_tick = now_ms()
 local ev = ffi.new("lbar_event_t")
 
-local function visible_panel()
-	local ap = ctx.active_panel
-	if ap and ap.visible then
-		return ap
+local function panel_by_popup(id)
+	if not id or id < 0 then
+		return nil
 	end
+	return ctx._panel_by_id and ctx._panel_by_id[id] or nil
+end
+
+local function panel_hit_root(rx, ry)
 	for _, p in pairs(panels) do
-		if p.visible then
+		if p.visible and not p.destroyed
+			and rx >= p.sx and rx < p.sx + p.w and ry >= p.sy and ry < p.sy + p.h then
 			return p
 		end
 	end
 	return nil
+end
+
+-- route a pointer event to a panel. wayland identifies the source surface
+-- in ev.a; x11 with a pointer grab delivers everything through the grab
+-- window, so the true target comes from hit-testing root coordinates. an
+-- in-flight press/drag gesture keeps routing to its panel until release.
+local function route_panel(ev, kind)
+	if kind ~= "press" then
+		local dp = ctx._drag_panel
+		if dp and dp.visible then
+			return dp
+		end
+		local pp = ctx._press_panel
+		if pp and pp.visible then
+			return pp
+		end
+	end
+	if ctx.backend_kind == "wayland" then
+		return panel_by_popup(ev.a)
+	end
+	local hit = panel_hit_root(ev.root_x, ev.root_y)
+	if hit then
+		return hit
+	end
+	return panel_by_popup(ev.a)
+end
+
+-- pointer events carry grab-window-relative coords on x11; recompute
+-- surface-local coords from the root position for the routed panel
+local function local_coords(p)
+	if ctx.backend_kind == "wayland" then
+		return ev.x, ev.y
+	end
+	return ev.root_x - p.sx, ev.root_y - p.sy
+end
+
+local function dismiss_outside_panels()
+	for _, q in pairs(panels) do
+		if q.visible and not q.destroyed and q.opts.ptr_grab ~= false then
+			q:hide()
+		end
+	end
 end
 
 log("lbar running (%s, %dx%d, plugins=%d)", kind, ctx.scr_w, ctx.scr_h, #bar.plugins)
@@ -504,15 +651,16 @@ while true do
 			if tgt == 0 then
 				bar.needs_redraw = true
 			else
+				-- expose/configure for one popup: redraw just that panel
+				local p = panel_by_popup(ev.a)
+				if p and p.visible and not p.destroyed then
+					p:draw()
+				end
 				local vis = L.lbar_popup_visible(Lctx) ~= 0
 				ctx.popup_visible = vis
-				if vis then
-					if ctx.active_panel then
-						ctx.active_panel:draw()
-					end
-				else
-					for _, p in pairs(panels) do
-						p.visible = false
+				if not vis then
+					for _, q in pairs(panels) do
+						q.visible = false
 					end
 					ctx.active_plugin_name = nil
 					ctx.active_panel = nil
@@ -521,9 +669,10 @@ while true do
 			end
 		elseif t == 1 then
 			if tgt == 1 then
-				local p = visible_panel()
-				if p then
-					local ok, perr = pcall(p.on_motion, p, ev.x, ev.y, ev.root_x, ev.root_y)
+				local p = route_panel(ev, "motion")
+				if p and not p.destroyed then
+					local lx, ly = local_coords(p)
+					local ok, perr = pcall(p.on_motion, p, lx, ly, ev.root_x, ev.root_y)
 					if not ok then
 						log("panel motion error: %s", tostring(perr))
 					end
@@ -533,13 +682,23 @@ while true do
 			end
 		elseif t == 2 then
 			if tgt == 1 then
-				local p = visible_panel()
-				if p then
-					if (ev.x < 0 or ev.y < 0 or ev.x >= p.w or ev.y >= p.h)
-						and p.opts.ptr_grab ~= false then
-						p:hide()
+				local p = route_panel(ev, "press")
+				if p and not p.destroyed then
+					local lx, ly = local_coords(p)
+					local inside = lx >= 0 and ly >= 0 and lx < p.w and ly < p.h
+					if not inside and p.opts.ptr_grab ~= false then
+						-- x11 grab delivered a press outside every panel:
+						-- dismiss the panels that opt in to outside-click
+						dismiss_outside_panels()
 					else
-						local ok, perr = pcall(p.on_press, p, ev.button, ev.x, ev.y, ev.root_x, ev.root_y)
+						if p.name ~= "toast" and ctx.active_panel ~= p then
+							-- focus follows the press (keyboard + grabs)
+							ctx.active_panel = p
+							ctx.active_plugin_name = p.name
+							ctx.sync_kbd()
+						end
+						ctx.sync_ptr_grab()
+						local ok, perr = pcall(p.on_press, p, ev.button, lx, ly, ev.root_x, ev.root_y)
 						if not ok then
 							log("panel press error: %s", tostring(perr))
 						end
@@ -550,13 +709,15 @@ while true do
 			end
 		elseif t == 3 then
 			if tgt == 1 then
-				local p = visible_panel()
-				if p then
-					local ok, perr = pcall(p.on_release, p, ev.button, ev.x, ev.y, ev.root_x, ev.root_y)
+				local p = route_panel(ev, "release")
+				if p and not p.destroyed then
+					local lx, ly = local_coords(p)
+					local ok, perr = pcall(p.on_release, p, ev.button, lx, ly, ev.root_x, ev.root_y)
 					if not ok then
 						log("panel release error: %s", tostring(perr))
 					end
 				end
+				ctx._press_panel = nil
 			end
 		elseif t == 5 then
 			if tgt == 1 then
@@ -574,6 +735,35 @@ while true do
 						log("action %s error: %s", action, tostring(aerr))
 					end
 				end
+			end
+		elseif t == 6 or t == 7 then
+			-- IME (zwp_text_input_v3): commit_string inserts at the focused
+			-- input cursor (same route as pasted text); preedit_string is the
+			-- composition preview shown while typing
+			local p = ctx.active_panel
+			if not (p and p.visible and p.input and p.input.focused) then
+				for _, q in pairs(panels) do
+					if q.visible and q.input and q.input.focused then
+						p = q
+						break
+					end
+				end
+			end
+			if p and p.visible and p.input and p.input.focused then
+				local ok, terr = pcall(function()
+					local text = ffi.string(ev.text)
+					if t == 6 then
+						if #text > 0 then
+							p.input:on_key(0, false, false, text)
+						end
+					else
+						p.input.preedit = #text > 0 and text or nil
+					end
+				end)
+				if not ok then
+					log("ime event error: %s", tostring(terr))
+				end
+				p:draw()
 			end
 		end
 	end

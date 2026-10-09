@@ -18,8 +18,9 @@ local XK_ESCAPE = 0xff1b
 -- readdir via ffi: io.popen("ls /proc") on every sample blocked the main loop
 local ok_ffi, ffi = pcall(require, "ffi")
 if ok_ffi then
-	-- TODO: errors redefine dirent
-	ffi.cdef[[
+	-- cdef symbols are global: a hot reload re-runs this file and errors
+	-- with "attempt to redefine 'dirent'" — ignore, signatures unchanged
+	pcall(ffi.cdef, [[
 		typedef struct DIR DIR;
 		typedef struct dirent {
 			unsigned long long d_ino;
@@ -31,7 +32,7 @@ if ok_ffi then
 		DIR *opendir(const char *);
 		dirent *readdir(DIR *);
 		int closedir(DIR *);
-	]]
+	]])
 end
 
 local function read_cpu_stat()
@@ -268,39 +269,70 @@ function M:clamp_scroll()
 	end
 end
 
+-- state-changing actions are deferred to M.tick and run under pcall —
+-- running them from inside draw() mutates business state mid-draw
+local function defer(fn)
+	M.pending_action = fn
+end
+
+-- MIUIX-style geometry: rounded card rows, unified side padding, small
+-- hint-coloured group titles in their own band with wide group separation
+local PAD, SB_W = 20, 6
+local ROW_GAP = 8 -- gap between row cards
+local CARD_R = 14 -- row card corner radius
+local GROUP_GAP = 28 -- gap between a card and the next group title
+local TOP_PAD = 14 -- breathing room under the header
+local BAR_H = 8 -- load bar height
+local SPARK_H = 48 -- history sparkline height
+local CHIP_GAP = 10 -- gap between per-core chips
+local LABEL_W = 60 -- fixed label column inside the cpu card
+local CPU_W, MEM_W = 72, 84 -- right-aligned list columns
+
+local function row_h(lh)
+	return math.max(46, lh + 28)
+end
+
+local function chip_h(lh)
+	return math.max(40, lh + 22)
+end
+
+local function title_h(lh)
+	return lh + 8
+end
+
 local function compute_layout(lh, ncores_display, scr_h, user_size)
 	local L = {}
-	L.W = 840
-	L.PAD = 20
+	L.PAD = PAD
+	L.W = 720
 	L.HEADER_H = lh + 26
-	L.BAR_H = 8
-	L.SPARK_H = 40
-	L.ROW_H = lh + 8
-	L.CORE_H = lh + 4
-	L.LABEL_W = 60
-	L.PCT_W = 76
-	L.FOOTER_H = lh + 16
-	L.CPU_H = L.ROW_H + L.SPARK_H + 12
-	L.CORES_H = ncores_display * L.CORE_H + 12
-	L.MEM_H = L.ROW_H * 4 + 12
-	L.PHDR_H = L.ROW_H
-
-	local want_h = math.min(math.floor(scr_h * 0.82), 880)
-	if want_h < 500 then
-		want_h = 500
+	L.FOOTER_H = lh + 30
+	L.ROW_H = row_h(lh)
+	L.CHIP_H = chip_h(lh)
+	L.TITLE_H = title_h(lh)
+	L.CPU_CARD_H = L.ROW_H + SPARK_H + 16
+	local chip_rows = math.ceil(math.max(1, ncores_display) / 4)
+	L.CORES_H = chip_rows * L.CHIP_H + (chip_rows - 1) * CHIP_GAP
+	-- header + cpu/cores/memory/system groups + processes title + footer are
+	-- fixed; the process list takes the remainder of the height
+	local fixed = L.HEADER_H + TOP_PAD
+		+ L.TITLE_H + L.CPU_CARD_H + ROW_GAP + L.CORES_H
+		+ GROUP_GAP + L.TITLE_H + L.ROW_H + ROW_GAP + L.ROW_H
+		+ GROUP_GAP + L.TITLE_H + L.ROW_H + ROW_GAP + L.ROW_H
+		+ GROUP_GAP + L.TITLE_H
+		+ L.FOOTER_H
+	L.FIXED_H = fixed
+	-- natural height follows the content rows, capped at 85% of the screen;
+	-- the list always keeps room for at least 4 visible rows
+	local want_h = math.min(math.floor(scr_h * 0.85), fixed + 6 * L.ROW_H)
+	if want_h < fixed + L.ROW_H * 4 then
+		want_h = fixed + L.ROW_H * 4
 	end
 	if user_size then
-		L.W = math.max(640, user_size.w)
-		want_h = math.max(420, user_size.h)
-	end
-	local fixed = L.HEADER_H + L.CPU_H + L.CORES_H + L.MEM_H + L.PHDR_H + L.FOOTER_H + 30
-	local list_h = want_h - fixed
-	if list_h < L.ROW_H * 4 then
-		list_h = L.ROW_H * 4
-		want_h = fixed + list_h
+		L.W = math.max(560, user_size.w)
+		want_h = math.max(380, user_size.h)
 	end
 	L.H = want_h
-	L.VISIBLE_ROWS = math.max(4, math.floor(list_h / L.ROW_H))
+	L.VISIBLE_ROWS = math.max(4, math.floor((want_h - fixed) / L.ROW_H))
 	return L
 end
 
@@ -330,31 +362,268 @@ local function do_draw(p)
 	local ctx = p.ctx
 	local ui = p.ui
 	local T = ctx.theme
-	local lh, PAD = p.ctx.get_line_height(), m.PAD
-	-- self-heal on resize: follow the live surface, re-derive list height
-	-- and visible rows so the view bottom/footer always match p.w/p.h
+	local lh, PAD = ctx.get_line_height(), m.PAD
+	-- self-heal on resize: follow the live surface, re-derive the list
+	-- height and visible rows so the view bottom/footer always match p.w/p.h
 	m.W, m.H = p.w, p.h
 	local W, H = m.W, m.H
-	local fixed = m.HEADER_H + m.CPU_H + m.CORES_H + m.MEM_H + m.PHDR_H + m.FOOTER_H + 30
-	local list_h = H - fixed
+	-- the header search input grows downward when text wraps: shift the
+	-- body down by the growth (Panel:fit grows the panel to match)
+	local in_extra = p.input and p.input:extra_h() or 0
+	local list_h = H - m.FIXED_H - in_extra
 	if list_h < m.ROW_H * 4 then
 		list_h = m.ROW_H * 4
 	end
-	m.VISIBLE_ROWS = math.max(4, math.floor(list_h / m.ROW_H))
-	M.VISIBLE_ROWS = m.VISIBLE_ROWS
-	local inner_w = W - PAD * 2
-	local LABEL_W, PCT_W = m.LABEL_W, m.PCT_W
-	local bar_x = PAD + LABEL_W
-	local bar_w = inner_w - LABEL_W - PCT_W - 8
+	local visible = math.max(1, math.floor(list_h / m.ROW_H))
+	m.VISIBLE_ROWS = visible
+	M.VISIBLE_ROWS = visible
 
-	local function draw_bar(x, y, w, h, pct, color)
-		p:rect(x, y, w, h, T.surface)
-		local fill = math.floor(w * math.max(0, math.min(100, pct)) / 100)
-		if fill > 0 then
-			p:rect(x, y, fill, h, color)
+	local card_x = PAD
+	local card_w = W - PAD * 2 - SB_W
+	local CR = card_x + card_w
+	local content_x = card_x + 16
+	local bar_x = content_x + LABEL_W
+
+	-- scrollable content is painted FIRST; the fixed chrome (header, footer)
+	-- is painted on top further down, which clips every band without needing
+	-- a scissor primitive
+
+	local y = m.HEADER_H + TOP_PAD + in_extra
+
+	-- cpu group: aggregate load row + history sparkline in one card
+	p:text(card_x + 6, y + m.TITLE_H - lh - 2, I.t("CPU"), T.hint)
+	y = y + m.TITLE_H
+	p:rrect(card_x, y, card_w, m.CPU_CARD_H, CARD_R, T.surface)
+	local ty = y + math.floor((m.ROW_H - lh) / 2)
+	local pct = M.cur_cpu_agg or 0
+	p:text(content_x, ty, I.t("CPU"), T.on_var)
+	local pct_str = string.format("%5.1f%%", pct)
+	local pw = select(1, ctx.get_text_size(pct_str))
+	p:text(CR - 16 - pw, ty, pct_str, T.hint)
+	local bar_w = CR - 16 - pw - 12 - bar_x
+	if bar_w > 40 then
+		ui:progress(bar_x, ty + math.floor((lh - BAR_H) / 2), bar_w, BAR_H, pct, load_color(T, pct))
+	end
+	local spark_y = y + m.ROW_H + 6
+	local slot_w = (card_w - 32) / HISTORY_LEN
+	for i = 0, HISTORY_LEN - 1 do
+		local idx = ((M.history_head + i) % HISTORY_LEN) + 1
+		local v = M.history[idx] or 0
+		local bh = math.floor((SPARK_H - 2) * v / 100)
+		if bh > 0 then
+			local bx = math.floor(content_x + i * slot_w)
+			local by = spark_y + SPARK_H - 1 - bh
+			local bw = math.max(1, math.floor(slot_w) - 1)
+			p:rect(bx, by, bw, bh, load_color(T, v))
+		end
+	end
+	y = y + m.CPU_CARD_H + ROW_GAP
+
+	-- per-core load as chips in a 4-column grid
+	if (M.ncores_display or 0) > 0 then
+		local chip_w = math.floor((card_w - 3 * CHIP_GAP) / 4)
+		for i = 1, M.ncores_display do
+			local col = (i - 1) % 4
+			local crow = math.floor((i - 1) / 4)
+			local cxp = card_x + col * (chip_w + CHIP_GAP)
+			local cyp = y + crow * (m.CHIP_H + CHIP_GAP)
+			p:rrect(cxp, cyp, chip_w, m.CHIP_H, CARD_R, T.surface)
+			local v = M.cur_cores[i] or 0
+			local cty = cyp + 4
+			p:text(cxp + 12, cty, string.format("c%d", i - 1), T.on_var)
+			local cs = string.format("%5.1f%%", v)
+			local cw = select(1, ctx.get_text_size(cs))
+			p:text(cxp + chip_w - 12 - cw, cty, cs, T.hint)
+			ui:progress(cxp + 12, cyp + m.CHIP_H - 12, chip_w - 24, 6, v, load_color(T, v))
+		end
+	end
+	y = y + m.CORES_H
+
+	-- memory group: mem + swap cards
+	local mem = M.cur_mem or {}
+	local mem_total = mem.MemTotal or 1
+	local mem_avail = mem.MemAvailable or mem.MemFree or 0
+	local mem_used = mem_total - mem_avail
+	local mem_pct = mem_used / mem_total * 100
+	y = y + GROUP_GAP
+	p:text(card_x + 6, y + m.TITLE_H - lh - 2, I.t("memory"), T.hint)
+	y = y + m.TITLE_H
+	p:rrect(card_x, y, card_w, m.ROW_H, CARD_R, T.surface)
+	ty = y + math.floor((m.ROW_H - lh) / 2)
+	p:text(content_x, ty, I.t("mem"), T.on_var)
+	local mem_str = string.format("%s / %s %3.0f%%", fmt_bytes_kb(mem_used), fmt_bytes_kb(mem_total), mem_pct)
+	local mw = select(1, ctx.get_text_size(mem_str))
+	p:text(CR - 16 - mw, ty, mem_str, T.hint)
+	bar_w = CR - 16 - mw - 12 - bar_x
+	if bar_w > 40 then
+		ui:progress(bar_x, ty + math.floor((lh - BAR_H) / 2), bar_w, BAR_H, mem_pct, load_color(T, mem_pct))
+	end
+	y = y + m.ROW_H + ROW_GAP
+
+	local swp_total = mem.SwapTotal or 0
+	local swp_free = mem.SwapFree or 0
+	local swp_used = swp_total - swp_free
+	local swp_pct = swp_total > 0 and (swp_used / swp_total * 100) or 0
+	p:rrect(card_x, y, card_w, m.ROW_H, CARD_R, T.surface)
+	ty = y + math.floor((m.ROW_H - lh) / 2)
+	p:text(content_x, ty, I.t("swap"), T.on_var)
+	local swp_str = swp_total > 0
+			and string.format("%s / %s %3.0f%%", fmt_bytes_kb(swp_used), fmt_bytes_kb(swp_total), swp_pct)
+		or "--"
+	local sw = select(1, ctx.get_text_size(swp_str))
+	p:text(CR - 16 - sw, ty, swp_str, T.hint)
+	bar_w = CR - 16 - sw - 12 - bar_x
+	if bar_w > 40 then
+		ui:progress(bar_x, ty + math.floor((lh - BAR_H) / 2), bar_w, BAR_H, swp_pct, load_color(T, swp_pct))
+	end
+	y = y + m.ROW_H
+
+	-- system group: load + uptime text cards
+	y = y + GROUP_GAP
+	p:text(card_x + 6, y + m.TITLE_H - lh - 2, I.t("system"), T.hint)
+	y = y + m.TITLE_H
+	p:rrect(card_x, y, card_w, m.ROW_H, CARD_R, T.surface)
+	ty = y + math.floor((m.ROW_H - lh) / 2)
+	p:text(content_x, ty, I.t("load"), T.on_var)
+	local load_str = M.cur_load or "--"
+	local lw = select(1, ctx.get_text_size(load_str))
+	p:text(CR - 16 - lw, ty, load_str, T.hint)
+	y = y + m.ROW_H + ROW_GAP
+	p:rrect(card_x, y, card_w, m.ROW_H, CARD_R, T.surface)
+	ty = y + math.floor((m.ROW_H - lh) / 2)
+	p:text(content_x, ty, I.t("uptime"), T.on_var)
+	local up_str = I.t("up %s", M.cur_up or "--")
+	local uw = select(1, ctx.get_text_size(up_str))
+	p:text(CR - 16 - uw, ty, up_str, T.hint)
+	y = y + m.ROW_H
+
+	-- processes group: card rows; the group title doubles as the column
+	-- header band (cpu/mem hints aligned over their columns)
+	y = y + GROUP_GAP
+	local mem_right = CR - 16
+	local cpu_right = mem_right - MEM_W - 16
+	p:text(card_x + 6, y + m.TITLE_H - lh - 2, I.t("processes"), T.hint)
+	local cpu_hdr = I.t("CPU%")
+	p:text(cpu_right - select(1, ctx.get_text_size(cpu_hdr)), y + m.TITLE_H - lh - 2, cpu_hdr, T.hint)
+	local mem_hdr = I.t("MEM%")
+	p:text(mem_right - select(1, ctx.get_text_size(mem_hdr)), y + m.TITLE_H - lh - 2, mem_hdr, T.hint)
+	y = y + m.TITLE_H
+
+	local pid_max = 0
+	for i = 0, visible - 1 do
+		local idx = M.scroll + i + 1
+		if idx > #M.filtered then
+			break
+		end
+		local pwd = select(1, ctx.get_text_size(tostring(M.filtered[idx].pid)))
+		if pwd > pid_max then
+			pid_max = pwd
+		end
+	end
+	local pid_x = content_x
+	local name_x = pid_x + pid_max + 26
+	local name_max_w = math.max(40, cpu_right - CPU_W - 12 - name_x)
+
+	m.rect_list.x = card_x
+	m.rect_list.y = y
+	m.rect_list.w = card_w
+	m.rect_list.h = visible * m.ROW_H
+
+	M:clamp_scroll()
+	for i = 0, visible - 1 do
+		local idx = M.scroll + i + 1
+		if idx > #M.filtered then
+			break
+		end
+		local proc = M.filtered[idx]
+		local ry = y + i * m.ROW_H
+		local selected = proc.pid == M.selected_pid
+		local hovered = ui:hover(card_x, ry, card_w, m.ROW_H)
+		p:rrect(card_x, ry, card_w, m.ROW_H, CARD_R,
+			selected and T.surface_hi or (hovered and T.surface_hover or T.surface))
+		local ry_ty = ry + math.floor((m.ROW_H - lh) / 2)
+		p:text(pid_x, ry_ty, tostring(proc.pid), T.hint)
+		local name = proc.name
+		if select(1, ctx.get_text_size(name)) > name_max_w then
+			local cut = #name
+			while cut > 0 do
+				if select(1, ctx.get_text_size(name:sub(1, cut) .. "…")) <= name_max_w then
+					name = name:sub(1, cut) .. "…"
+					break
+				end
+				cut = cut - 1
+			end
+		end
+		p:text(name_x, ry_ty, name, selected and T.on_surface or T.on_var)
+		local cpu_col = proc.cpu >= 80 and T.crit or proc.cpu >= 30 and T.warn or T.good
+		local cstr = string.format("%5.1f", proc.cpu)
+		p:text(cpu_right - select(1, ctx.get_text_size(cstr)), ry_ty, cstr, cpu_col)
+		local mp = proc.mem / (mem_total * 1024) * 100
+		local mstr = string.format("%5.1f%%", mp)
+		p:text(mem_right - select(1, ctx.get_text_size(mstr)), ry_ty, mstr, T.hint)
+	end
+	y = y + m.rect_list.h
+
+	-- scrollbar (right edge, inside padding)
+	if #M.filtered > visible then
+		local off = ui:scrollbar("sm_sb", W - 14, m.rect_list.y, SB_W, m.rect_list.h,
+			M.scroll, #M.filtered - visible)
+		M.scroll = off
+	end
+
+	-- fixed chrome painted last so content can never overlap it
+
+	-- footer: opaque band covers rows scrolled past the bottom; pill buttons
+	-- laid out like a MIUI dialog (primary action filled)
+	local fy = H - m.FOOTER_H - in_extra
+	p:rect(0, fy, W, m.FOOTER_H + in_extra, p.bg)
+	p:rect(PAD, fy, W - PAD * 2, 1, T.outline)
+	local mid_y = fy + math.floor((m.FOOTER_H - lh) / 2)
+	local bh = lh + 14
+	local bo = math.floor((m.FOOTER_H - bh) / 2)
+	local bw = 76
+	if M.pending then
+		local nm = M.pending.name
+		if #nm > 24 then
+			nm = nm:sub(1, 24) .. "…"
+		end
+		local q = I.t("kill %d %s?", M.pending.pid, nm)
+		local q_max = W - PAD * 2 - 2 * bw - 12 - 24
+		while #q > 4 and select(1, ctx.get_text_size(q)) > q_max do
+			q = q:sub(1, -2)
+		end
+		p:text(PAD, mid_y, q, T.crit)
+		-- state changes are deferred: draw only records the hit intent
+		if ui:id_button("sm_cancel", W - PAD - 2 * bw - 12, fy + bo, bw, bh, I.t("cancel"),
+			{ tonal = true }) then
+			defer(function()
+				M.pending = nil
+			end)
+		end
+		if ui:id_button("sm_kill", W - PAD - bw, fy + bo, bw, bh, I.t("kill"),
+			{ filled = true, color = T.crit }) then
+			defer(function()
+				M:do_kill()
+			end)
+		end
+	else
+		local total = #M.procs
+		local shown = #M.filtered
+		local status = (shown < total)
+				and I.t("filter %d / %d · ctrl+f search · ctrl+k kill", shown, total)
+			or I.t("%d processes · ctrl+f search · ctrl+k kill", total)
+		p:text(PAD, mid_y, status, T.hint)
+		if ui:id_button("sm_refresh", W - PAD - bw, fy + bo, bw, bh, I.t("refresh"),
+			{ tonal = true }) then
+			defer(function()
+				M:sample()
+				M.ctx.notify(I.t("refreshed"), { style = "info", duration = 1500 })
+			end)
 		end
 	end
 
+	-- header last: opaque fill also covers anything under the top edge;
+	-- the search input lives inside the header band
 	local hh = p:draw_header(I.t("System Monitor"), Util.keybind_hint(ctx, "toggle_sysmon"), PAD)
 	local hint = Util.keybind_hint(ctx, "toggle_sysmon")
 	local hw = select(1, ctx.get_text_size(hint))
@@ -367,187 +636,12 @@ local function do_draw(p)
 		p.input:set_rect(search_x, search_y, search_w, search_h)
 		p.input:draw(p)
 	end
-
-	local y = m.HEADER_H + 12
-
-	local pct = M.cur_cpu_agg or 0
-	p:text(PAD, y, I.t("CPU"), T.on_var)
-	draw_bar(bar_x, y + math.floor((lh - m.BAR_H) / 2), bar_w, m.BAR_H, pct, load_color(T, pct))
-	p:text(W - PAD - PCT_W, y, string.format("%6.1f%%", pct), T.on_surface)
-	y = y + m.ROW_H
-
-	p:rect(PAD, y, inner_w, m.SPARK_H, T.surface)
-	local slot_w = inner_w / HISTORY_LEN
-	for i = 0, HISTORY_LEN - 1 do
-		local idx = ((M.history_head + i) % HISTORY_LEN) + 1
-		local v = M.history[idx] or 0
-		local bh = math.floor((m.SPARK_H - 2) * v / 100)
-		if bh > 0 then
-			local bx = math.floor(PAD + i * slot_w)
-			local by = y + m.SPARK_H - 1 - bh
-			local bw = math.max(1, math.floor(slot_w) - 1)
-			p:rect(bx, by, bw, bh, load_color(T, v))
-		end
-	end
-	y = y + m.SPARK_H + 12
-
-	for i = 1, M.ncores_display or 0 do
-		local v = M.cur_cores[i] or 0
-		p:text(PAD, y, string.format("c%-2d", i - 1), T.hint)
-		draw_bar(bar_x, y + math.floor((lh - 4) / 2), bar_w, 4, v, load_color(T, v))
-		p:text(W - PAD - PCT_W, y, string.format("%6.1f%%", v), T.on_var)
-		y = y + m.CORE_H
-	end
-	y = y + 8
-	p:rect(PAD, y, inner_w, 1, T.outline)
-	y = y + 10
-
-	local mem = M.cur_mem or {}
-	local mem_total = mem.MemTotal or 1
-	local mem_avail = mem.MemAvailable or mem.MemFree or 0
-	local mem_used = mem_total - mem_avail
-	local mem_pct = mem_used / mem_total * 100
-
-	p:text(PAD, y, I.t("mem"), T.on_var)
-	draw_bar(bar_x, y + math.floor((lh - m.BAR_H) / 2), bar_w, m.BAR_H, mem_pct, load_color(T, mem_pct))
-	local mem_str = string.format("%s/%s %3.0f%%", fmt_bytes_kb(mem_used), fmt_bytes_kb(mem_total), mem_pct)
-	local mw = select(1, ctx.get_text_size(mem_str))
-	p:text(W - PAD - mw, y, mem_str, T.on_surface)
-	y = y + m.ROW_H
-
-	local swp_total = mem.SwapTotal or 0
-	local swp_free = mem.SwapFree or 0
-	local swp_used = swp_total - swp_free
-	local swp_pct = swp_total > 0 and (swp_used / swp_total * 100) or 0
-	p:text(PAD, y, I.t("swap"), T.on_var)
-	draw_bar(bar_x, y + math.floor((lh - m.BAR_H) / 2), bar_w, m.BAR_H, swp_pct, load_color(T, swp_pct))
-	local swp_str = swp_total > 0
-			and string.format("%s/%s %3.0f%%", fmt_bytes_kb(swp_used), fmt_bytes_kb(swp_total), swp_pct)
-		or "--"
-	local sw = select(1, ctx.get_text_size(swp_str))
-	p:text(W - PAD - sw, y, swp_str, T.on_surface)
-	y = y + m.ROW_H
-
-	local load_str = M.cur_load or "--"
-	p:text(PAD, y, I.t("load"), T.on_var)
-	local lw = select(1, ctx.get_text_size(load_str))
-	p:text(W - PAD - lw, y, load_str, T.on_surface)
-	y = y + m.ROW_H
-
-	local up_str = I.t("up %s", M.cur_up or "--")
-	p:text(PAD, y, I.t("uptime"), T.on_var)
-	local uw = select(1, ctx.get_text_size(up_str))
-	p:text(W - PAD - uw, y, up_str, T.on_surface)
-	y = y + m.ROW_H + 10
-	p:rect(PAD, y, inner_w, 1, T.outline)
-	y = y + 10
-
-	local pid_max = 0
-	for i = 0, m.VISIBLE_ROWS - 1 do
-		local idx = M.scroll + i + 1
-		if idx > #M.filtered then
-			break
-		end
-		local pw = select(1, ctx.get_text_size(tostring(M.filtered[idx].pid)))
-		if pw > pid_max then
-			pid_max = pw
-		end
-	end
-	local pid_x = PAD
-	local name_x = pid_x + pid_max + 26
-	-- clamp the cpu/mem columns so narrow (user-resized) panels never overflow
-	local cpu_x = math.min(PAD + 440, W - PAD - 240)
-	local mem_x = cpu_x + 80
-	p:text(pid_x, y, I.t("PID"), T.hint)
-	p:text(name_x, y, I.t("NAME"), T.hint)
-	p:text(cpu_x, y, I.t("CPU%"), T.hint)
-	p:text(mem_x, y, I.t("MEM%"), T.hint)
-
-	m.rect_list.x = PAD
-	m.rect_list.y = y + m.ROW_H
-	m.rect_list.w = inner_w - 8
-	m.rect_list.h = m.VISIBLE_ROWS * m.ROW_H
-	y = y + m.ROW_H
-
-	local row_h = m.ROW_H
-	local name_max_w = cpu_x - name_x - 12
-	M:clamp_scroll()
-	for i = 0, m.VISIBLE_ROWS - 1 do
-		local idx = M.scroll + i + 1
-		if idx > #M.filtered then
-			break
-		end
-		local proc = M.filtered[idx]
-		local ry = y + i * row_h
-		local selected = (proc.pid == M.selected_pid)
-		if selected then
-			p:rect(PAD - 4, ry, inner_w + 8, row_h, T.surface_hover)
-		end
-		p:text(pid_x, ry, tostring(proc.pid), selected and T.on_surface or T.on_var)
-		local name = proc.name
-		if select(1, ctx.get_text_size(name)) > name_max_w then
-			local cut = #name
-			while cut > 0 do
-				if select(1, ctx.get_text_size(name:sub(1, cut) .. "…")) <= name_max_w then
-					name = name:sub(1, cut) .. "…"
-					break
-				end
-				cut = cut - 1
-			end
-		end
-		p:text(name_x, ry, name, T.on_surface)
-		local cpu_col = proc.cpu >= 80 and T.crit or proc.cpu >= 30 and T.warn or T.good
-		p:text(cpu_x, ry, string.format("%6.1f", proc.cpu), cpu_col)
-		local mp = proc.mem / (mem_total * 1024) * 100
-		p:text(mem_x, ry, string.format("%6.1f%%", mp), T.on_var)
-	end
-
-	local list_top = m.rect_list.y
-	local list_h = m.rect_list.h
-	local sbar_x = m.rect_list.x + m.rect_list.w + 2
-	if #M.filtered > m.VISIBLE_ROWS then
-		p:rect(sbar_x, list_top, 6, list_h, T.surface)
-		local bar_h = math.max(30, math.floor(list_h * m.VISIBLE_ROWS / #M.filtered))
-		local max_scroll = #M.filtered - m.VISIBLE_ROWS
-		local bar_y = list_top + math.floor((list_h - bar_h) * M.scroll / max_scroll)
-		p:rrect(sbar_x, bar_y, 6, bar_h, 3, T.outline)
-	end
-
-	local by = H - m.FOOTER_H + 4
-	p:rect(PAD, by - 6, inner_w, 1, T.outline)
-	if M.pending then
-		local nm = M.pending.name
-		if #nm > 24 then
-			nm = nm:sub(1, 24) .. "…"
-		end
-		local q = I.t("kill %d %s?", M.pending.pid, nm)
-		local q_max = inner_w - 2 * 76 - 12 - 24
-		while #q > 4 and select(1, ctx.get_text_size(q)) > q_max do
-			q = q:sub(1, -2)
-		end
-		p:text(PAD, by + 4, q, T.crit)
-		local bw = 76
-		local bh = lh + 6
-		local byy = H - m.FOOTER_H + math.floor((m.FOOTER_H - bh) / 2)
-		if ui:id_button("sm_cancel", W - PAD - 2 * bw - 12, byy, bw, bh, I.t("cancel"), { tonal = true }) then
-			M.pending = nil
-		end
-		if ui:id_button("sm_kill", W - PAD - bw, byy, bw, bh, I.t("kill"), { filled = true, color = T.crit }) then
-			M:do_kill()
-		end
-		return
-	end
-	local total = #M.procs
-	local shown = #M.filtered
-	local status = (shown < total)
-			and I.t("filter %d / %d · ctrl+f search · ctrl+k kill", shown, total)
-		or I.t("%d processes · ctrl+f search · ctrl+k kill", total)
-	p:text(PAD, by + 4, status, T.hint)
 end
 
 function M.init(ctx)
 	M.ctx = ctx
 	M.ready = true
+	M.pending_action = nil
 
 	local probe = read_cpu_stat()
 	local ncores_all = probe and #probe.cores or 4
@@ -651,9 +745,6 @@ function M.init(ctx)
 	local m = compute_layout(ctx.get_line_height(), M.ncores_display, ctx.scr_h)
 	m.rect_list = { x = 0, y = 0, w = 0, h = 0 }
 	panel.m = m
-	M.W, M.PAD = m.W, m.PAD
-	M.HEADER_H, M.BAR_H, M.SPARK_H, M.ROW_H, M.CORE_H = m.HEADER_H, m.BAR_H, m.SPARK_H, m.ROW_H, m.CORE_H
-	M.LABEL_W, M.PCT_W, M.FOOTER_H = m.LABEL_W, m.PCT_W, m.FOOTER_H
 	M.VISIBLE_ROWS = m.VISIBLE_ROWS
 	M.panel = panel
 	ctx.register_panel("sysmon", panel)
@@ -676,6 +767,7 @@ function M.init(ctx)
 	M.search_query = ""
 	M.refresh_acc = 0
 	M._fit_cores = M.ncores_display
+	M.need_fit = false
 
 	M.prev_cpu = read_cpu_stat()
 	for _, pid in ipairs(list_pids()) do
@@ -715,8 +807,13 @@ function M:do_kill()
 	if not pid or type(pid) ~= "number" then
 		return
 	end
-	os.execute("kill -TERM " .. pid .. " 2>/dev/null")
-	M.ctx.notify(I.t("SIGTERM sent to pid %d", pid), { style = "warning", duration = 2000 })
+	-- os.execute yields the raw exit code (0 = success), never a boolean
+	local rc = os.execute("kill -TERM " .. pid .. " 2>/dev/null")
+	if rc == 0 then
+		M.ctx.notify(I.t("SIGTERM sent to pid %d", pid), { style = "success", duration = 2000 })
+	else
+		M.ctx.notify(I.t("kill failed: pid %d", pid), { style = "error", duration = 2500 })
+	end
 	M.pending = nil
 	M.selected_pid = nil
 	M:sample()
@@ -726,6 +823,17 @@ function M.tick(ctx, dt)
 	if not M.ready or not M.panel then
 		return
 	end
+	if M.pending_action then
+		local fn = M.pending_action
+		M.pending_action = nil
+		local ok, err = pcall(fn)
+		if not ok then
+			log("pending action error: %s", tostring(err))
+		end
+		if M.panel.visible then
+			M.panel:draw()
+		end
+	end
 	M.refresh_acc = M.refresh_acc + dt
 	if M.refresh_acc >= REFRESH_MS then
 		M.refresh_acc = 0
@@ -734,6 +842,11 @@ function M.tick(ctx, dt)
 		-- the only data-dependent term in size_fn); fit() no-ops if unchanged
 		if M.ncores_display ~= M._fit_cores then
 			M._fit_cores = M.ncores_display
+			M.need_fit = true
+		end
+		-- need_fit is consumed here, never inside draw
+		if M.need_fit then
+			M.need_fit = false
 			M.panel:fit()
 		end
 		if M.panel.visible then
@@ -745,6 +858,7 @@ end
 function M.shutdown()
 	M.ready = false
 	M.ctx = nil
+	M.pending_action = nil
 end
 
 return M

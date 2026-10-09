@@ -10,10 +10,15 @@ local keybind_hint = Util.keybind_hint
 local POLL_MS = 2000
 local MAX_ENTRY_BYTES = 65536
 
-local L_TITLE = "Clipboard"
-local L_CLEAR = "clear"
-local L_EMPTY = "clipboard is empty, go copy something"
-local L_NO_MATCH = "no matching entries"
+-- MIUIX-style geometry: rounded card rows, unified side padding,
+-- scrollbar lane reserved at the right edge
+local PAD, SB_W = 20, 6
+local ROW_GAP = 8 -- gap between row cards
+local CARD_R = 14 -- row card corner radius
+
+local function row_h(lh)
+	return math.max(46, lh + 28)
+end
 
 local function truncate_to_px(ctx, text, max_w)
 	if max_w <= 0 then
@@ -67,19 +72,27 @@ local function build_model(ctx, user_size)
 	local n = M.filtered and #M.filtered or 0
 	local m = {
 		LH = lh,
+		PAD = PAD,
 		W = 560,
 		APPBAR = lh + 26,
-		SEARCH_H = lh + 20,
-		ROW_H = lh + 22,
-		FOOTER_H = lh + 22,
-		VROWS = math.min(8, math.max(1, n)),
+		IN_H = lh + 20,
+		SEARCH_H = 14 + (lh + 20) + 12,
+		ROW_H = row_h(lh),
+		ROW_GAP = ROW_GAP,
+		FOOTER_H = lh + 30,
 	}
+	m.view_y = m.APPBAR + m.SEARCH_H
 	if user_size then
 		m.W = math.max(400, user_size.w)
-		local used = m.APPBAR + 14 + m.SEARCH_H + 12 + m.FOOTER_H + 12
-		m.VROWS = math.max(3, math.floor((user_size.h - used) / m.ROW_H))
+		m.H = math.max(240, user_size.h)
+	else
+		-- natural height follows the (roomy) card rows, capped at 85% of
+		-- the screen; overflow scrolls inside the view
+		local content = math.max(1, n) * (m.ROW_H + ROW_GAP)
+		m.H = math.max(m.view_y + m.ROW_H + m.FOOTER_H,
+			math.min(ctx.scr_h * 0.85, m.view_y + content + m.FOOTER_H))
 	end
-	m.H = m.APPBAR + 14 + m.SEARCH_H + 12 + m.VROWS * m.ROW_H + m.FOOTER_H
+	m.VROWS = math.max(1, math.floor((m.H - m.view_y - m.FOOTER_H + ROW_GAP) / (m.ROW_H + ROW_GAP)))
 	return m
 end
 
@@ -90,83 +103,101 @@ local function do_draw(p)
 	local T = ctx.theme
 	local lh = m.LH
 
-	-- self-heal on resize: model follows the live surface so rows, footer
-	-- and right edges always match the real panel
+	-- self-heal on resize: model follows the live surface so the view band,
+	-- visible row count and footer always match the real panel
 	m.W, m.H = p.w, p.h
-	local used = m.APPBAR + 14 + m.SEARCH_H + 12 + m.FOOTER_H
-	m.VROWS = math.max(1, math.floor((m.H - used) / m.ROW_H))
+	local in_extra = p.input and p.input:extra_h() or 0
+	m.view_y = m.APPBAR + m.SEARCH_H + in_extra
+	m.view_h = math.max(m.ROW_H, m.H - m.view_y - m.FOOTER_H)
+	m.VROWS = math.max(1, math.floor((m.view_h + m.ROW_GAP) / (m.ROW_H + m.ROW_GAP)))
 	local W, H = m.W, m.H
+	local n = #M.filtered
 	local tw = function(str)
 		return select(1, ctx.get_text_size(str))
 	end
 
-	p:draw_header(I.t(L_TITLE), M.hint, 24)
-
-	local sy = m.APPBAR + 14
-	p.input:set_rect(24, sy, W - 48, m.SEARCH_H)
-	p.input:draw(p)
-
-	local list_y = sy + m.SEARCH_H + 12
-	local list_h = m.VROWS * m.ROW_H
-	local footer_y = list_y + list_h
-	local n = #M.filtered
-
-	p:rect(0, list_y, W, list_h, T.bg)
-
-	local row_text_x = 44
-	local time_pad_r = 24
+	local CR = W - PAD - SB_W -- card right edge
+	local card_w = CR - PAD
+	local DEL_W = 28 -- per-row delete hit square
+	local del_x = CR - 16 - DEL_W
 	local time_w = tw("00:00")
-	local row_text_max_w = W - row_text_x - time_pad_r - time_w - 16
+	-- entry text leaves room for the timestamp and the delete button
+	local row_text_max_w = del_x - 10 - time_w - 12 - (PAD + 16)
 
+	-- scrollable content is painted FIRST; the fixed chrome (header, search
+	-- band, footer) is painted on top further down, which clips every row
+	-- to the view band without needing a scissor primitive
+	local maxs = math.max(0, n - m.VROWS)
+	M.scroll = math.max(0, math.min(maxs, M.scroll))
 	for i = 1, m.VROWS do
 		local li = M.scroll + i
-		local ry = list_y + (i - 1) * m.ROW_H
+		if li > n then
+			break
+		end
+		local e = M.filtered[li]
+		local ry = m.view_y + (i - 1) * (m.ROW_H + m.ROW_GAP)
+		local hover = ui:hover(PAD, ry, card_w, m.ROW_H)
+		p:rrect(PAD, ry, card_w, m.ROW_H, CARD_R, hover and T.surface_hover or T.surface)
+		local ty = ry + math.floor((m.ROW_H - lh) / 2)
+		local display = truncate_to_px(ctx, one_line(e.text), row_text_max_w)
+		p:text(PAD + 16, ty, display, T.on_var)
 
-		if li <= n then
-			local e = M.filtered[li]
-			local hover = ui:hover(0, ry, W, m.ROW_H)
-			if hover then
-				p:rect(0, ry, W, m.ROW_H, T.surface_hi)
-			end
+		local tstr = os.date("%H:%M", e.t)
+		p:text(del_x - 10 - tw(tstr), ty, tstr, T.hint)
 
-			p:rrect(24, ry + math.floor((m.ROW_H - 8) / 2), 8, 8, 4, T.primary)
-
-			local ty = ry + math.floor((m.ROW_H - lh) / 2)
-			local display = truncate_to_px(ctx, one_line(e.text), row_text_max_w)
-			p:text(row_text_x, ty, display, T.on_var)
-
-			local tstr = os.date("%H:%M", e.t)
-			local tsw = tw(tstr)
-			p:text(W - time_pad_r - tsw, ty, tstr, T.hint)
-
-			if li < n and i < m.VROWS then
-				p:rect(24, ry + m.ROW_H - 1, W - 48, 1, T.outline)
-			end
-
-			if ui:clicked(0, ry, W, m.ROW_H) then
-				M.copy_row(e)
-			end
+		-- delete button: subtle × that gains a hover pill
+		local del_y = ry + math.floor((m.ROW_H - DEL_W) / 2)
+		if ui:hover(del_x, del_y, DEL_W, DEL_W) then
+			p:rrect(del_x, del_y, DEL_W, DEL_W, 8, T.surface_hi)
+		end
+		p:text(del_x + math.floor((DEL_W - tw("×")) / 2), del_y + math.floor((DEL_W - lh) / 2),
+			"×", T.on_var)
+		if ui:clicked(del_x, del_y, DEL_W, DEL_W) then
+			-- never mutate history mid-draw: queue for M.tick (pcall'd there)
+			M.pending_delete = e
+		elseif ui:clicked(PAD, ry, card_w, m.ROW_H) then
+			M.pending_copy = e
 		end
 	end
 
 	if n == 0 then
-		local empty = M.query ~= "" and I.t(L_NO_MATCH) or I.t(L_EMPTY)
+		local empty = M.query ~= "" and I.t("no matching entries")
+			or I.t("clipboard is empty, go copy something")
 		local ew = tw(empty)
-		local ey = list_y + math.min(math.floor(m.ROW_H * 0.6),
-			math.max(0, m.VROWS * m.ROW_H - lh - 2))
+		local ey = m.view_y + math.floor(math.max(0, m.view_h - lh) / 2)
 		p:text(math.floor(W / 2 - ew / 2), ey, empty, T.hint)
 	end
 
-	p:rect(0, footer_y, W, m.FOOTER_H, T.surface)
-	p:rect(0, footer_y, W, 1, T.outline)
-	local by = footer_y + math.floor((m.FOOTER_H - lh) / 2)
+	-- scrollbar (right edge, inside padding)
+	if maxs > 0 then
+		local off = ui:scrollbar("scr", W - 14, m.view_y, SB_W, m.view_h, M.scroll, maxs)
+		M.scroll = off
+	end
+
+	-- fixed chrome painted last so scrolled content can never overlap it
+
+	-- search band: opaque fill over the scrolled rows, then the input
+	p:rect(0, m.APPBAR, W, m.SEARCH_H + in_extra, p.bg)
+	p.input:set_rect(PAD, m.APPBAR + 14, W - PAD * 2 - SB_W, m.IN_H)
+	p.input:draw(p)
+
+	-- header (draw_header paints its own opaque band)
+	p:draw_header(I.t("Clipboard"), M.hint, PAD)
+
+	-- footer: opaque band covers rows scrolled past the bottom; pill
+	-- button laid out like a MIUI dialog (destructive action tonal)
+	local fy = H - m.FOOTER_H
+	p:rect(0, fy, W, m.FOOTER_H, p.bg)
+	p:rect(PAD, fy, W - PAD * 2, 1, T.outline)
+	local mid_y = fy + math.floor((m.FOOTER_H - lh) / 2)
 	local cnt = string.format("%d / %d", n, #M.history)
-	p:text(24, by, cnt, T.hint)
+	p:text(PAD, mid_y, cnt, T.hint)
 	local bw = 84
-	local bh = lh + 10
-	local byy = footer_y + math.floor((m.FOOTER_H - bh) / 2)
-	if ui:id_button("clip_clear", W - 24 - bw, byy, bw, bh, I.t(L_CLEAR), { tonal = true }) then
-		M.clear_all()
+	local bh = lh + 14
+	local bo = math.floor((m.FOOTER_H - bh) / 2)
+	if ui:id_button("clip_clear", W - PAD - bw, fy + bo, bw, bh, I.t("clear"), { tonal = true }) then
+		-- destructive: queued for M.tick, never run mid-draw
+		M.pending_clear = true
 	end
 end
 
@@ -196,6 +227,9 @@ function M.init(ctx)
 	M.acc = POLL_MS
 	M.scroll = 0
 	M.query = ""
+	M.pending_copy = nil
+	M.pending_delete = nil
+	M.pending_clear = nil
 	M.hint = keybind_hint(ctx, "toggle_clip_hist")
 	M.filtered = M.history
 
@@ -253,6 +287,22 @@ function M.tick(ctx, dt)
 	if M.acc >= POLL_MS then
 		M.acc = 0
 		M.poll()
+	end
+	-- destructive UI actions queued by draw() run here, outside the draw
+	-- pass, pcall-guarded so a failure can never take the bar down
+	if M.pending_copy then
+		local e = M.pending_copy
+		M.pending_copy = nil
+		pcall(M.copy_row, e)
+	end
+	if M.pending_delete then
+		local e = M.pending_delete
+		M.pending_delete = nil
+		pcall(M.remove_entry, e)
+	end
+	if M.pending_clear then
+		M.pending_clear = nil
+		pcall(M.clear_all)
 	end
 	-- auto-fit when the visible entry count changes (cheap change guard;
 	-- fit() itself no-ops when the size already matches or user resized)
@@ -315,11 +365,27 @@ function M.copy_row(e)
 	end
 end
 
+-- remove one entry from the history; runs from M.tick (queued by the row
+-- delete button) so the list is never mutated mid-draw
+function M.remove_entry(e)
+	for i, it in ipairs(M.history) do
+		if it == e then
+			table.remove(M.history, i)
+			M.apply_filter()
+			M.ctx.notify(I.t("entry deleted"), { style = "success" })
+			if M.panel.visible then
+				M.panel:draw()
+			end
+			return
+		end
+	end
+end
+
 function M.clear_all()
 	M.history = {}
 	M.filtered = M.history
 	M.scroll = 0
-	M.ctx.notify(I.t("clipboard history cleared"), { style = "plain" })
+	M.ctx.notify(I.t("clipboard history cleared"), { style = "success" })
 	M.panel:draw()
 end
 
@@ -327,6 +393,9 @@ function M.shutdown()
 	if M.ctx then
 		M.ctx._clip_state = { history = M.history }
 	end
+	M.pending_copy = nil
+	M.pending_delete = nil
+	M.pending_clear = nil
 	M.ctx = nil
 end
 

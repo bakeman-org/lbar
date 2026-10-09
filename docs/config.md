@@ -47,9 +47,10 @@ marked; the rest are action/panel only.
 | plugin | bar item | opens |
 |---|---|---|
 | `logo` | tux logo | app info popup (theme switch, reload, quit) |
-| `cpu` | `cpu` + sparkline | sysmon panel |
-| `mem` | `mem` + usage pill | sysmon panel |
-| `battery` | `BAT NN%` / `CHG` / `LOW` | power panel (hidden if no battery) |
+| `workspace` | active workspace | click cycles workspace (hyprland/sway) |
+| `cpu` | `cpu` + usage | sysmon panel |
+| `mem` | `mem` + usage | sysmon panel |
+| `battery` | `BAT NN%` / `CHG` / `LOW` | battery + power menu (hidden if no battery) |
 | `volume` | `VOL N%` / `MUTE` | volume panel (hidden without pactl) |
 | `clock` | time | clock panel |
 | `keybinds_help` | `keys` | keybind catalog |
@@ -65,7 +66,6 @@ marked; the rest are action/panel only.
 | `settings` | `set` | settings panel |
 | `wallpaper` | `wall` | wallpaper picker |
 | `wifi` | ssid + signal | wifi panel |
-| `power` | `power` | power menu |
 | `hide_all` | — (action only) | `hide_all_windows` |
 | `move_window` | — (action only) | window move keybinds |
 | `resize_window` | — (action only) | window resize keybinds |
@@ -146,11 +146,11 @@ panel_opts = {
 
 ### cpu / mem (bar item styling)
 
+Compact text-only labels, colored by load/usage.
+
 | key | default | description |
 |---|---|---|
-| `style` | `'graph'` | `'text'` \| `'graph'` \| `'both'` |
 | `interval_ms` | cpu `1000`, mem `2000` | sample interval |
-| `history` | `24` (cpu only, min 8) | sparkline samples |
 | `color` | `true` | color by load/usage (good/warn/crit) |
 
 ### wifi
@@ -176,7 +176,10 @@ installed) > swaybg (`SWAYSOCK`) > hyprpaper (`HYPRLAND_*`) > wayland + swww
 > feh > nitrogen > xwallpaper > hyprctl. Covers i3/X11 via
 feh/nitrogen/xwallpaper.
 
-### power
+### battery (session menu)
+
+The battery bar item opens one merged panel: battery status on top, then a
+Noctalia-style session card row.
 
 | key | default | description |
 |---|---|---|

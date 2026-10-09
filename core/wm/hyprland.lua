@@ -47,4 +47,13 @@ function M.register_binds(ctx, config, cli, log)
 	return n
 end
 
+-- one shell line valid under either config provider: the Lua provider
+-- (hyprctl eval) is tried first, the classic text parser second — only one
+-- of the two is active per session, the other just fails fast
+function M.dispatch_cmd(lua_expr, classic_args)
+	local q = lua_expr:gsub("'", "'\\''")
+	return string.format("hyprctl eval '%s' >/dev/null 2>&1 || hyprctl dispatch %s >/dev/null 2>&1",
+		q, classic_args)
+end
+
 return M

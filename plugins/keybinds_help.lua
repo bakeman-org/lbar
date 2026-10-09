@@ -1,3 +1,5 @@
+-- plugins/keybinds_help.lua — scrollable keybind reference panel
+-- (MIUIX-style card rows: translated description left, combo pill right)
 local M = {}
 local Panel = require("core.panel")
 local Util = require("core.util")
@@ -5,18 +7,12 @@ local I = require("core.i18n")
 
 local log = Util.logger("keybinds_help")
 
-local ROW_PAD_Y = 9
-local ROW_GAP = 6
-local MAX_PANEL_H = 640
-local WHEEL_STEP = 52
-local SBAR_W = 4
-local SBAR_PAD = 10
+-- MIUIX-style geometry (mirrors plugins/settings.lua)
+local PAD, SB_W, ROW_GAP, CARD_R, GROUP_GAP = 20, 6, 8, 14, 28
+local WHEEL_STEP = 76
 
 local st = {
 	scroll = 0,
-	max_scroll = 0,
-	drag_active = false,
-	drag_grab = 0,
 }
 
 local function clamp(v, lo, hi)
@@ -45,9 +41,10 @@ local function group_of(kb)
 	return "other"
 end
 
+-- desc: translate at model build so width measurement uses the zh text
 local function desc_of(kb)
 	if kb.desc and kb.desc ~= "" then
-		return kb.desc
+		return I.t(kb.desc)
 	end
 	return kb.action
 end
@@ -83,71 +80,51 @@ local function build_model(ctx, user_size)
 	end
 
 	local APPBAR = lh + 26
-	local SEC_H = lh + 14
-	local GAP = 12
-	local PAD = 24
-	local ROW_BOX_H = lh + ROW_PAD_Y * 2
+	local GROUP_H = lh + 8
+	local ROW_H = math.max(46, lh + 28)
+	local FOOTER_H = lh + 22
 	local H_content = 0
-	for _, gname in ipairs(order) do
+	local total = 0
+	for gi, gname in ipairs(order) do
 		local rows = rows_by_group[gname]
 		groups[#groups + 1] = { title = gname, rows = rows }
-		H_content = H_content + SEC_H + #rows * (ROW_BOX_H + ROW_GAP) + GAP
+		total = total + #rows
+		if gi > 1 then
+			H_content = H_content + GROUP_GAP - ROW_GAP
+		end
+		H_content = H_content + GROUP_H + ROW_GAP + #rows * (ROW_H + ROW_GAP)
 	end
 	if #groups == 0 then
 		groups[1] = { title = "other", rows = { { combo = I.t("(none)"), desc = I.t("no keybinds in config.lua") } } }
-		H_content = SEC_H + ROW_BOX_H + ROW_GAP + GAP
+		total = 1
+		H_content = GROUP_H + ROW_GAP + ROW_H + ROW_GAP
 	end
 
 	local COMBO_COL = max_combo_w + 28
 	local desired = PAD + 22 + COMBO_COL + max_desc_w + 22 + PAD + 12
 	local W = math.max(480, math.min(math.max(760, lh * 24), desired))
-	local natural_h = APPBAR + 14 + H_content + 14
-	local H = math.min(math.max(MAX_PANEL_H, lh * 16), natural_h)
+	-- natural height from the row count, capped at 85% of the screen
+	local natural_h = APPBAR + 14 + H_content + 14 + FOOTER_H
+	local H = math.max(lh * 12, math.min(ctx.scr_h * 0.85, natural_h))
 	if user_size then
 		W = math.max(W, user_size.w)
 		H = math.max(lh * 10, user_size.h)
 	end
-	local max_scroll = math.max(0, APPBAR + H_content - H + 28)
+	local max_scroll = math.max(0, APPBAR + 14 + H_content + 14 - (H - FOOTER_H) + 8)
 
 	return {
 		groups = groups,
 		LH = lh,
 		APPBAR = APPBAR,
-		SEC_H = SEC_H,
-		GAP = GAP,
+		GROUP_H = GROUP_H,
+		ROW_H = ROW_H,
+		FOOTER_H = FOOTER_H,
 		PAD = PAD,
-		ROW_BOX_H = ROW_BOX_H,
-		COMBO_COL = COMBO_COL,
 		W = W,
 		H = H,
 		content_h = H_content,
+		total = total,
 		max_scroll = max_scroll,
-	}
-end
-
-local function scrollbar_geo(p, m)
-	if m.max_scroll <= 0 then
-		return nil
-	end
-	local track_x = m.W - SBAR_PAD
-	local track_y = m.APPBAR + 8
-	local track_h = m.H - m.APPBAR - 16
-	if track_h <= 0 then
-		return nil
-	end
-	local view_h = m.H - m.APPBAR
-	local bar_h = math.max(28, track_h * (view_h - m.max_scroll) / view_h)
-	if bar_h > track_h then
-		bar_h = track_h
-	end
-	local bar_y = track_y + (track_h - bar_h) * (st.scroll / m.max_scroll)
-	return {
-		track_x = track_x,
-		track_y = track_y,
-		track_w = SBAR_W,
-		track_h = track_h,
-		bar_y = bar_y,
-		bar_h = bar_h,
 	}
 end
 
@@ -158,11 +135,10 @@ local function do_draw(p)
 	local T = ctx.theme
 	local lh = m.LH
 
-	-- self-heal on resize: model follows the live surface so the scrollbar
-	-- track, row culling and scroll range always match the real panel
+	-- self-heal on resize: model follows the live surface so the scrollbar,
+	-- row culling and scroll range always match the real panel
 	m.W, m.H = p.w, p.h
-	m.max_scroll = math.max(0, m.APPBAR + (m.content_h or 0) - m.H + 28)
-	st.max_scroll = m.max_scroll
+	m.max_scroll = math.max(0, m.APPBAR + 14 + (m.content_h or 0) + 14 - (m.H - m.FOOTER_H) + 8)
 	st.scroll = clamp(st.scroll, 0, m.max_scroll)
 	local W, H = m.W, m.H
 	local tw = function(str)
@@ -170,51 +146,59 @@ local function do_draw(p)
 	end
 
 	local view_top = m.APPBAR
-	local view_bot = H
-	local content_top = m.APPBAR + 14
-	local has_scrollbar = m.max_scroll > 0
-	local right_inset = has_scrollbar and (SBAR_PAD + SBAR_W + 6) or 0
+	local view_bot = H - m.FOOTER_H
+	local y = view_top + 14 - st.scroll
+	local card_x = m.PAD
+	local card_w = W - m.PAD * 2 - SB_W
 
-	local box_x = m.PAD - 6
-	local box_w = W - (m.PAD - 6) * 2 - right_inset
-	local text_x = box_x + 22
-	local desc_x = text_x + m.COMBO_COL
-
-	local y = content_top - st.scroll
-
-	for _, g in ipairs(m.groups) do
-		local section_h = m.SEC_H + #g.rows * (m.ROW_BOX_H + ROW_GAP) + m.GAP
-		if y + section_h > view_top and y < view_bot then
-			local gtitle = I.t(g.title)
-			local title_w = tw(gtitle)
-			p:text(m.PAD, y, gtitle, T.primary)
-			p:rect(m.PAD + title_w + 12, y + math.floor(lh / 2), W - m.PAD * 2 - title_w - 12, 1, T.outline)
-			y = y + m.SEC_H
-			for _, row in ipairs(g.rows) do
-				if y + m.ROW_BOX_H > view_top and y < view_bot then
-					local hover = ui:hover(box_x, y, box_w, m.ROW_BOX_H)
-					p:rrect(box_x, y, box_w, m.ROW_BOX_H, 12, hover and T.surface_hi or T.surface)
-					p:rrect(box_x + 10, y + 10, 3, m.ROW_BOX_H - 20, 2, T.primary)
-					local ty = y + math.floor((m.ROW_BOX_H - lh) / 2)
-					p:text(text_x, ty, row.combo, T.primary_hi)
-					p:text(desc_x, ty, row.desc, T.on_surface)
+	-- scrollable rows painted FIRST; the footer band and the header below
+	-- cover the overflow opaquely, which clips without needing a scissor
+	for gi, g in ipairs(m.groups) do
+		if gi > 1 then
+			y = y + GROUP_GAP - ROW_GAP
+		end
+		-- group title: small hint-coloured text
+		if y + m.GROUP_H > view_top and y < view_bot then
+			p:text(m.PAD + 6, y + 6, I.t(g.title), T.hint)
+		end
+		y = y + m.GROUP_H + ROW_GAP
+		for _, row in ipairs(g.rows) do
+			if y + m.ROW_H > view_top and y < view_bot then
+				local hovered = ui:hover(card_x, y, card_w, m.ROW_H)
+				p:rrect(card_x, y, card_w, m.ROW_H, CARD_R, hovered and T.surface_hover or T.surface)
+				local ty = y + math.floor((m.ROW_H - lh) / 2)
+				-- combo pill right-aligned; desc truncated to the room left over
+				local pill_w = tw(row.combo) + 24
+				local pill_h = lh + 12
+				local pill_x = card_x + card_w - 16 - pill_w
+				local desc = row.desc
+				local avail = pill_x - 12 - (card_x + 16)
+				if tw(desc) > avail then
+					local cw = tw("n")
+					desc = Util.utf8_truncate(desc, math.max(2, math.floor(avail / math.max(4, cw))))
 				end
-				y = y + m.ROW_BOX_H + ROW_GAP
+				p:text(card_x + 16, ty, desc, T.on_var)
+				p:rrect(pill_x, y + math.floor((m.ROW_H - pill_h) / 2), pill_w, pill_h, pill_h / 2, T.surface_hi)
+				p:text(pill_x + 12, ty, row.combo, T.hint)
 			end
-			y = y + m.GAP
-		else
-			y = y + section_h
+			y = y + m.ROW_H + ROW_GAP
 		end
 	end
 
-	local geo = scrollbar_geo(p, m)
-	if geo then
-		p:rrect(geo.track_x, geo.track_y, geo.track_w, geo.track_h, geo.track_w / 2, T.surface)
-		local bar_hover = ui:hover(geo.track_x - 4, geo.bar_y, geo.track_w + 8, geo.bar_h)
-		local bar_color = (bar_hover or st.drag_active) and T.primary_hi or T.primary
-		p:rrect(geo.track_x, geo.bar_y, geo.track_w, geo.bar_h, geo.track_w / 2, bar_color)
+	-- scrollbar (right edge, inside padding)
+	if m.max_scroll > 0 then
+		st.scroll = ui:scrollbar("kb_scroll", W - 14, view_top, SB_W, view_bot - view_top,
+			st.scroll, m.max_scroll)
 	end
 
+	-- footer: opaque band + hairline separator + row count
+	local fy = H - m.FOOTER_H
+	p:rect(0, fy, W, m.FOOTER_H, p.bg)
+	p:rect(m.PAD, fy, W - m.PAD * 2, 1, T.outline)
+	p:text(m.PAD, fy + math.floor((m.FOOTER_H - lh) / 2),
+		I.t("%d keybinds · %d groups", m.total, #m.groups), T.hint)
+
+	-- header painted LAST: its opaque band clips the scrolled content
 	p:draw_header(I.t("Keybinds"), Util.keybind_hint(ctx, "toggle_keybinds_help"), m.PAD)
 end
 
@@ -255,44 +239,7 @@ function M.init(ctx)
 					st.scroll = clamp(st.scroll - dy * WHEEL_STEP, 0, m.max_scroll)
 					p:draw()
 				end
-				return
 			end
-			local geo = scrollbar_geo(p, m)
-			if geo then
-				local on_track = mx >= geo.track_x - 4
-					and mx <= geo.track_x + geo.track_w + 4
-					and my >= geo.track_y
-					and my <= geo.track_y + geo.track_h
-				if on_track then
-					if my >= geo.bar_y and my <= geo.bar_y + geo.bar_h then
-						st.drag_active = true
-						st.drag_grab = my - geo.bar_y
-					else
-						local span = geo.track_h - geo.bar_h
-						if span > 0 then
-							local frac = (my - geo.track_y - geo.bar_h / 2) / span
-							st.scroll = clamp(frac * m.max_scroll, 0, m.max_scroll)
-						end
-					end
-					p:draw()
-				end
-			end
-		end,
-		on_motion = function(p, mx, my)
-			if st.drag_active then
-				local geo = scrollbar_geo(p, p.m)
-				if geo then
-					local span = geo.track_h - geo.bar_h
-					if span > 0 then
-						local frac = (my - st.drag_grab - geo.track_y) / span
-						st.scroll = clamp(frac * p.m.max_scroll, 0, p.m.max_scroll)
-						p:draw()
-					end
-				end
-			end
-		end,
-		on_release = function(p)
-			st.drag_active = false
 		end,
 	})
 	if not panel then

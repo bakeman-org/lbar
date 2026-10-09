@@ -38,7 +38,7 @@ __prompt:
 __native:
 	luastatic lbar.lua config.lua core/*.lua plugins/*.lua core/wm/*.lua   -I /usr/include/luajit-2.1/   /usr/lib/x86_64-linux-gnu/libluajit-5.1.a lbar.so lbar_audio.so
 
-__tmp_check_run: __native lbar-cli
+__tmp_check_run: lbar.so lbar_audio.so __native lbar-cli
 	-cp lbar /tmp/
 	-cp config.lua /tmp/
 	-cp lbar-cli /tmp/

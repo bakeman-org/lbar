@@ -51,7 +51,6 @@ function M.new(ctx, opts)
 	self.last_anchor = nil
 	self.mx, self.my = -1, -1
 	self._drawing = false
-	self._kbd_grabbed = false
 	self.user_size = nil
 	self.draggable = opts.draggable ~= false
 	self._drag = nil
@@ -60,6 +59,7 @@ function M.new(ctx, opts)
 	if opts.input then
 		self.input = TI.new(ctx, opts.input)
 		self.kbd = true
+		self._input_h = self.input:height()
 	end
 
 	if opts.size_fn then
@@ -79,12 +79,25 @@ function M.new(ctx, opts)
 
 	ctx._panels = ctx._panels or {}
 	ctx._panels[self.name] = self
+	ctx._panel_by_id = ctx._panel_by_id or {}
+	ctx._panel_by_id[self.id] = self
 	if ctx.actions then
 		ctx.actions["toggle_" .. self.name] = function()
 			ctx.toggle_panel(self.name)
 		end
 	end
 	return self
+end
+
+-- does this panel currently want the (exclusive) keyboard grab?
+function Panel:kbd_wanted()
+	if self.input and self.input.focused then
+		return true
+	end
+	if self.ui and self.ui.any_focus and self.ui:any_focus() then
+		return true
+	end
+	return false
 end
 
 function Panel:refit()
@@ -144,7 +157,8 @@ function Panel:live_resize(w, h)
 		self.animating = false
 		self.ctx.L.lbar_popup_move(self.ctx.Lctx, self.id, sx, sy)
 		self.ctx.L.lbar_popup_show(self.ctx.Lctx, self.id)
-		if self._kbd_grabbed then
+		-- resize rebuilt the surface: re-take the keyboard grab if we owned it
+		if self.ctx._kbd_id == self.id then
 			self.ctx.L.lbar_kbd_grab(self.ctx.Lctx, self.id)
 		end
 		if self.opts.model_fn then
@@ -165,6 +179,10 @@ function Panel:fit()
 		return false
 	end
 	local w, h = self.opts.size_fn(self.ctx)
+	-- a wrapped input growing past its base row needs matching panel room
+	if self.input then
+		h = h + self.input:extra_h()
+	end
 	w = math.max(1, math.floor(w or 1))
 	h = math.max(1, math.floor(h or 1))
 	local ctx = self.ctx
@@ -427,10 +445,19 @@ function Panel:_begin_show()
 	end
 	L.lbar_popup_move(ctx.Lctx, self.id, math.floor(self.anim_x), math.floor(self.anim_y))
 	L.lbar_popup_show(ctx.Lctx, self.id)
-	if self.opts.ptr_grab ~= false then
-		L.lbar_ptr_grab(ctx.Lctx, self.id)
+	-- multi-panel: the shown panel becomes the focused one; the shared
+	-- pointer-grab sync picks a dismissable panel to hold the X11 grab
+	if self.name ~= "toast" then
+		ctx.active_panel = self
+		ctx.active_plugin_name = self.name
 	end
 	ctx.popup_visible = true
+	if ctx.sync_kbd then
+		ctx.sync_kbd()
+	end
+	if ctx.sync_ptr_grab then
+		ctx.sync_ptr_grab()
+	end
 	if self.opts.on_show then
 		self.opts.on_show(self)
 	end
@@ -438,18 +465,8 @@ function Panel:_begin_show()
 end
 
 function Panel:_kbd_sync()
-	local want = false
-	if self.input and self.input.focused then
-		want = true
-	elseif self.ui and self.ui.any_focus and self.ui:any_focus() then
-		want = true
-	end
-	if want and not self._kbd_grabbed then
-		self.ctx.L.lbar_kbd_grab(self.ctx.Lctx, self.id)
-		self._kbd_grabbed = true
-	elseif not want and self._kbd_grabbed then
-		self.ctx.L.lbar_kbd_ungrab(self.ctx.Lctx)
-		self._kbd_grabbed = false
+	if self.ctx.sync_kbd then
+		self.ctx.sync_kbd()
 	end
 end
 
@@ -464,14 +481,18 @@ function Panel:_finish_hide()
 	if self.ui and self.ui.blur_input then
 		self.ui:blur_input()
 	end
-	if self._kbd_grabbed then
-		self._kbd_grabbed = false
-		ctx.L.lbar_kbd_ungrab(ctx.Lctx)
-	end
-	if self.opts.ptr_grab ~= false then
-		ctx.L.lbar_ptr_ungrab(ctx.Lctx)
+	if self._drag and ctx._drag_panel == self then
+		ctx._drag_panel = nil
 	end
 	ctx.L.lbar_popup_hide(ctx.Lctx, self.id)
+	-- keyboard / IME / pointer grabs are owned by the shared syncs: they
+	-- keep grabs alive when other visible panels still want them
+	if ctx.sync_kbd then
+		ctx.sync_kbd()
+	end
+	if ctx.sync_ptr_grab then
+		ctx.sync_ptr_grab()
+	end
 	if self.opts.on_hide then
 		self.opts.on_hide(self)
 	end
@@ -483,10 +504,24 @@ function Panel:hide(instant)
 		return
 	end
 	self.visible = false
-	ctx.popup_visible = false
 	if ctx.active_panel == self then
 		ctx.active_panel = nil
 	end
+	if ctx._press_panel == self then
+		ctx._press_panel = nil
+	end
+	if ctx._drag_panel == self then
+		ctx._drag_panel = nil
+	end
+	-- popup_visible stays true while any other panel is still up
+	local any = false
+	for _, q in pairs(ctx._panels or {}) do
+		if q.visible then
+			any = true
+			break
+		end
+	end
+	ctx.popup_visible = any
 	local a = self:anim_dir()
 	if instant or a == "none" then
 		self:_finish_hide()
@@ -507,10 +542,28 @@ function Panel:hide(instant)
 end
 
 function Panel:tick(dt)
+	if self._need_fit then
+		self._need_fit = false
+		self:fit()
+	end
 	if self.input and self.visible then
 		local prev = self.input.blink_on
-		self.input:tick(dt)
-		if prev ~= self.input.blink_on then
+		local changed = self.input:tick(dt)
+		-- a wrapped input grew/shrunk (long text): re-fit BEFORE the next
+		-- draw so the grown rows never render outside the surface — never
+		-- resized from inside draw
+		local ih = self.input:height()
+		if ih ~= self._input_h then
+			self._input_h = ih
+			self._need_fit = true
+			changed = true
+		end
+		if self._need_fit then
+			self._need_fit = false
+			self:fit()
+			changed = true
+		end
+		if prev ~= self.input.blink_on or changed then
 			self:draw()
 		end
 	end
@@ -615,6 +668,8 @@ function Panel:on_press(btn, mx, my, rx, ry)
 		return false
 	end
 	self.mx, self.my = mx, my
+	local ctx = self.ctx
+	ctx._press_panel = self
 	-- close button handled centrally (runs before widget/plugin dispatch)
 	if btn == 1 and self:close_hit(mx, my) then
 		self:hide()
@@ -623,6 +678,7 @@ function Panel:on_press(btn, mx, my, rx, ry)
 	-- drag from the header strip (anywhere except the close button)
 	if btn == 1 and self.draggable and self.header_h and my < self.header_h then
 		self._drag = { sx = self.sx, sy = self.sy, mx0 = mx, my0 = my, moved = false }
+		ctx._drag_panel = self
 	end
 	if self.ui and btn == 1 then
 		self.ui:press(mx, my)
@@ -645,6 +701,12 @@ function Panel:on_release(btn, mx, my, rx, ry)
 		return false
 	end
 	self.mx, self.my = mx, my
+	if self.ctx._drag_panel == self then
+		self.ctx._drag_panel = nil
+	end
+	if self.ctx._press_panel == self then
+		self.ctx._press_panel = nil
+	end
 	local d = self._drag
 	local moved = d and d.moved
 	self._drag = nil
@@ -700,6 +762,9 @@ function Panel:destroy()
 	end
 	self.destroyed = true
 	self.surf = nil
+	if self.ctx._panel_by_id then
+		self.ctx._panel_by_id[self.id] = nil
+	end
 end
 
 return M

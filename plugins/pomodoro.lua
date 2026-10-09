@@ -18,18 +18,32 @@ local function fmt_ms(ms)
 	return string.format("%d:%02d", math.floor(s / 60), s % 60)
 end
 
+-- toast feedback for user-triggered key actions (start / pause / reset)
+local function toast(key)
+	if M.ctx and M.ctx.notify then
+		M.ctx.notify(I.t(key), { style = "info" })
+	end
+end
+
+-- MIUIX-style geometry: hero card + segmented mode control on the panel
+-- background, footer band with pill buttons; natural height follows the
+-- content rows (capped at 85% of the screen)
 local function build_model(ctx, user_size)
 	local lh = ctx.get_line_height()
 	local m = {
 		LH = lh,
-		W = 340,
+		PAD = 20,
+		CARD_R = 14,
+		ROW_GAP = 8,
 		APPBAR = lh + 26,
-		BIG_H = lh + 34,
-		CHIP_H = lh + 14,
-		BTN_H = lh + 24,
+		HERO_H = lh + 46,
 		PROG_H = 6,
+		SEG_H = lh + 18,
+		FOOTER_H = lh + 30,
+		W = 380,
 	}
-	m.H = m.APPBAR + 20 + m.BIG_H + 16 + m.PROG_H + 18 + m.CHIP_H + 14 + m.BTN_H + m.LH + 38
+	local H = m.APPBAR + 16 + m.HERO_H + m.ROW_GAP + m.SEG_H + m.ROW_GAP + 16 + m.FOOTER_H
+	m.H = math.min(math.floor(ctx.scr_h * 0.85), H)
 	if user_size then
 		m.W = math.max(m.W, user_size.w)
 		m.H = math.max(m.H, user_size.h)
@@ -44,49 +58,73 @@ local function do_draw(p)
 	local T = ctx.theme
 	local lh = m.LH
 	m.W, m.H = p.w, p.h
-	local W, H = m.W, m.H
+	local W, PAD = m.W, m.PAD
+	local card_w = W - PAD * 2
 	local tw = function(str)
 		return select(1, ctx.get_text_size(str))
 	end
 
-	local y = p:draw_header(I.t(L_TITLE), M.hint, 24) + 20
+	-- scrollable content is painted FIRST; the fixed chrome (footer, header)
+	-- is painted on top further down, which clips it without a scissor
+
+	-- hero card: big countdown + progress inside one rounded card
+	local y = m.APPBAR + 16
 	local is_focus = M.mode == "focus"
 	local tcol = M.running and (is_focus and T.primary or T.good) or T.on_var
+	p:rrect(PAD, y, card_w, m.HERO_H, m.CARD_R, T.surface)
 	local tstr = fmt_ms(M.remaining)
-	p:text(math.floor(W / 2 - tw(tstr) / 2), y, tstr, tcol)
-
-	y = y + m.BIG_H + 16
+	p:text(math.floor(W / 2 - tw(tstr) / 2), y + 12, tstr, tcol)
 	local frac = 1 - math.max(0, M.remaining) / M.total
-	local pw = W - 48
-	p:rrect(24, y, pw, m.PROG_H, 3, T.surface_hi)
+	local pw = card_w - 32
+	local py = y + 12 + lh + 12
+	p:rrect(PAD + 16, py, pw, m.PROG_H, 3, T.surface_hi)
 	if frac > 0 then
 		local fw = math.max(6, math.floor(pw * frac))
-		p:rrect(24, y, fw, m.PROG_H, 3, is_focus and T.primary or T.good)
+		p:rrect(PAD + 16, py, fw, m.PROG_H, 3, is_focus and T.primary or T.good)
+	end
+	y = y + m.HERO_H + m.ROW_GAP
+
+	-- segmented mode control: MIUI pill container, raised active segment
+	local seg_h = m.SEG_H
+	p:rrect(PAD, y, card_w, seg_h, math.floor(seg_h / 2), T.surface_hi)
+	local segs = { { "focus", I.t(L_FOCUS) }, { "break", I.t(L_BREAK) } }
+	local seg_w = math.floor(card_w / 2)
+	for i, sg in ipairs(segs) do
+		local sx = PAD + (i - 1) * seg_w
+		local sw = i == #segs and (card_w - seg_w * (#segs - 1)) or seg_w
+		local active = M.mode == sg[1]
+		if active then
+			p:rrect(sx + 3, y + 3, sw - 6, seg_h - 6, math.floor((seg_h - 6) / 2), T.bg)
+		end
+		local stw = tw(sg[2])
+		p:text(sx + math.floor((sw - stw) / 2), y + math.floor((seg_h - lh) / 2), sg[2],
+			active and T.primary or T.hint)
+		if ui:clicked(sx, y, sw, seg_h) then
+			M.set_mode(sg[1])
+		end
 	end
 
-	y = y + m.PROG_H + 18
-	local chip_w = 90
-	local cx = math.floor((W - (chip_w * 2 + 12)) / 2)
-	if ui:id_button("pomo_focus", cx, y, chip_w, m.CHIP_H, I.t(L_FOCUS), { filled = is_focus }) then
-		M.set_mode("focus")
-	end
-	if ui:id_button("pomo_break", cx + chip_w + 12, y, chip_w, m.CHIP_H, I.t(L_BREAK), { filled = not is_focus }) then
-		M.set_mode("break")
-	end
-
-	y = y + m.CHIP_H + 14
-	local btn_w = 110
-	local bx = math.floor((W - (btn_w * 2 + 12)) / 2)
-	if ui:id_button("pomo_run", bx, y, btn_w, m.BTN_H, M.running and I.t(L_PAUSE) or I.t(L_START),
-		{ filled = true, radius = 14 }) then
+	-- footer: opaque band covers content scrolled past the bottom; pill
+	-- buttons laid out like a MIUI dialog (primary action filled)
+	local fy = m.H - m.FOOTER_H
+	p:rect(0, fy, W, m.FOOTER_H, p.bg)
+	p:rect(PAD, fy, W - PAD * 2, 1, T.outline)
+	local dstr = I.t("completed %d", M.done)
+	p:text(PAD, fy + math.floor((m.FOOTER_H - lh) / 2), dstr, T.hint)
+	local bh = lh + 14
+	local bo = fy + math.floor((m.FOOTER_H - bh) / 2)
+	local bw = 96
+	if ui:id_button("pomo_run", W - PAD - bw * 2 - 10, bo, bw, bh,
+		M.running and I.t(L_PAUSE) or I.t(L_START), { filled = true }) then
 		M.toggle_run()
 	end
-	if ui:id_button("pomo_reset", bx + btn_w + 12, y, btn_w, m.BTN_H, I.t(L_RESET), { tonal = true, radius = 14 }) then
+	if ui:id_button("pomo_reset", W - PAD - bw, bo, bw, bh, I.t(L_RESET),
+		{ tonal = true, bg = T.surface_hi }) then
 		M.reset_timer()
 	end
 
-	local dstr = I.t("completed %d", M.done)
-	p:text(math.floor(W / 2 - tw(dstr) / 2), y + m.BTN_H + 10, dstr, T.hint)
+	-- header LAST: opaque band covers anything painted under it
+	p:draw_header(I.t(L_TITLE), M.hint, PAD)
 end
 
 function M.bar_label()
@@ -213,6 +251,7 @@ function M.toggle_run()
 	M.running = not M.running
 	M.last_sec = -1
 	M.panel:draw()
+	toast(M.running and "timer started" or "timer paused")
 end
 
 function M.reset_timer()
@@ -220,6 +259,7 @@ function M.reset_timer()
 	M.remaining = M.total
 	M.last_sec = -1
 	M.panel:draw()
+	toast("timer reset")
 end
 
 function M.shutdown()

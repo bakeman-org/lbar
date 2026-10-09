@@ -13,6 +13,8 @@ return function(SCRIPT_DIR)
       int target;
       int keycode;
       int keystate;
+      int a, b;
+      char text[512];
     } lbar_event_t;
 
     lbar_ctx   *lbar_open(void);
@@ -46,6 +48,10 @@ return function(SCRIPT_DIR)
                            unsigned char *out, int out_max);
     int64_t lbar_key_lookup(lbar_ctx *c, int keycode, int state, char *out, int out_max);
     int lbar_ipc_take(lbar_ctx *c, char *out, int out_max);
+
+    int lbar_ti_enable(lbar_ctx *c, int x, int y, int w, int h);
+    int lbar_ti_disable(lbar_ctx *c);
+    int lbar_ti_set_cursor(lbar_ctx *c, int x, int y, int w, int h);
 
     int  lbar_poll(lbar_ctx *c, int timeout_ms);
     int  lbar_next_event(lbar_ctx *c, lbar_event_t *out);

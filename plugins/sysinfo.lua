@@ -1,5 +1,6 @@
--- plugins/sysinfo.lua — fastfetch-style system info, macOS grouped-list look:
--- neutral tokens, label left / value right, inset hairline dividers.
+-- plugins/sysinfo.lua — fastfetch-style system info, MIUIX card-group look:
+-- rounded surface cards per group, hint-coloured group titles, labels in
+-- on_var / right-aligned values in hint, inset hairline row dividers.
 -- Sync data from procfs; slow probes (gpu/pkg/disk/ip/arch) run as a
 -- background shell job polled from tick (never block the main loop).
 local M = {}
@@ -12,6 +13,14 @@ local log = Util.logger("sysinfo")
 local REFRESH_MS = 2000
 local PROBE_FILE = "/tmp/lbar-sysinfo-probe"
 local PROBE_TIMEOUT_MS = 6000
+
+-- MIUIX-style geometry: rounded card groups, unified side padding, small
+-- hint-coloured group titles with wide group separation
+local PAD = 20
+local CARD_R = 14
+local ROW_GAP = 8 -- gap after a group card
+local GROUP_GAP = 28 -- gap between a card and the next group title
+local TOP_PAD = 14 -- breathing room under the header
 
 local probe = { tried = false, done = false, acc = 0, data = {} }
 
@@ -99,9 +108,9 @@ local function poll_probe()
 	probe.done = true
 end
 
--- rows: { k = label_key, v = value } or { sep = true }
+-- groups: { { title = <i18n key>, rows = { { k = label_key, v = value } } } }
 local function gather(ctx)
-	local rows = {}
+	local sys, hw = {}, {}
 	local P = probe.data
 
 	local osrel = read_all("/etc/os-release") or ""
@@ -149,44 +158,48 @@ local function gather(ctx)
 		mem = string.format("%s / %s", fmt_bytes(used_gib), fmt_bytes(total_gib))
 	end
 
-	rows[#rows + 1] = { k = "OS", v = distro }
-	rows[#rows + 1] = { k = "Kernel", v = kernel }
-	rows[#rows + 1] = { k = "DE/WM", v = de }
-	rows[#rows + 1] = { k = "Shell", v = shell }
-	rows[#rows + 1] = { k = "Locale", v = os.getenv("LANG") or "--" }
-	rows[#rows + 1] = { k = "Uptime", v = fmt_uptime(uptime_sec) }
+	sys[#sys + 1] = { k = "OS", v = distro }
+	sys[#sys + 1] = { k = "Kernel", v = kernel }
+	sys[#sys + 1] = { k = "DE/WM", v = de }
+	sys[#sys + 1] = { k = "Shell", v = shell }
+	sys[#sys + 1] = { k = "Locale", v = os.getenv("LANG") or "--" }
+	sys[#sys + 1] = { k = "Uptime", v = fmt_uptime(uptime_sec) }
 	if P.pkgs and P.pkgs ~= "" and P.pkgs ~= "?" then
-		rows[#rows + 1] = { k = "Packages", v = P.pkgs }
+		sys[#sys + 1] = { k = "Packages", v = P.pkgs }
 	end
-	rows[#rows + 1] = { k = "Resolution", v = string.format("%dx%d", ctx.scr_w, ctx.scr_h) }
+	sys[#sys + 1] = { k = "Resolution", v = string.format("%dx%d", ctx.scr_w, ctx.scr_h) }
 	if P.ip and P.ip ~= "" then
-		rows[#rows + 1] = { k = "Local IP", v = P.ip }
+		sys[#sys + 1] = { k = "Local IP", v = P.ip }
 	end
 
-	rows[#rows + 1] = { sep = true }
-
-	rows[#rows + 1] = { k = "Processor", v = model }
+	hw[#hw + 1] = { k = "Processor", v = model }
 	if P.gpu and P.gpu ~= "" then
-		rows[#rows + 1] = { k = "GPU", v = P.gpu }
+		hw[#hw + 1] = { k = "GPU", v = P.gpu }
 	end
-	rows[#rows + 1] = { k = "Memory", v = mem }
+	hw[#hw + 1] = { k = "Memory", v = mem }
 	if P.disk and P.disk ~= "" then
-		rows[#rows + 1] = { k = "Disk", v = P.disk .. "  /" }
+		hw[#hw + 1] = { k = "Disk", v = P.disk .. "  /" }
 	end
 
-	return rows
+	return {
+		{ title = "system", rows = sys },
+		{ title = "hardware", rows = hw },
+	}
 end
 
 local function build_model(ctx, user_size)
 	local lh = ctx.get_line_height()
-	local sample = gather(ctx)
+	local groups = M.rows or gather(ctx)
 	local header_h = lh + 26
-	local footer_h = lh + 24
-	local title_h = lh * 2 + 14
-	local row_h = lh + 8
+	local footer_h = lh + 30
+	local hero_h = lh * 2 + 28
+	local title_h = lh + 8
+	local row_h = math.max(40, lh + 24)
 	local label_w, val_w = 0, 0
-	for _, r in ipairs(sample) do
-		if not r.sep then
+	local n_rows = 0
+	for _, g in ipairs(groups) do
+		for _, r in ipairs(g.rows) do
+			n_rows = n_rows + 1
 			local lw = select(1, ctx.get_text_size(I.t(r.k)))
 			local vw = select(1, ctx.get_text_size(r.v))
 			if lw > label_w then
@@ -200,14 +213,26 @@ local function build_model(ctx, user_size)
 	local host = (os.getenv("USER") or "?") .. "@" ..
 		(read_first("/proc/sys/kernel/hostname") or "?")
 	local title_w = select(1, ctx.get_text_size(host))
+	-- label left (16 inset) + min gap + value right (16 inset)
 	local W = math.max(560, math.min(880,
-		22 + label_w + 40 + val_w + 26, 22 + title_w + 60))
-	local H = header_h + 14 + title_h + row_h * #sample + footer_h + 12
+		PAD * 2 + 32 + label_w + 40 + val_w, PAD + 80 + title_w))
+	local H = header_h + TOP_PAD + hero_h + footer_h
+	for _, g in ipairs(groups) do
+		H = H + GROUP_GAP + title_h + #g.rows * row_h + 12 + ROW_GAP
+	end
+	-- natural height from the content rows, capped at 85% of the screen
+	-- (overflow rows are clipped behind the opaque footer band)
+	H = math.min(H, math.floor(ctx.scr_h * 0.85))
 	if user_size then
 		W = math.max(W, user_size.w)
 		H = math.max(H, user_size.h)
 	end
-	return { LH = lh, PAD = 22, W = W, H = H, ROW_H = row_h }
+	return {
+		LH = lh, PAD = PAD, W = W, H = H,
+		HEADER_H = header_h, FOOTER_H = footer_h,
+		HERO_H = hero_h, TITLE_H = title_h, ROW_H = row_h,
+		ROWS = n_rows,
+	}
 end
 
 local function truncate(ctx, value, max_w)
@@ -234,48 +259,67 @@ local function do_draw(p)
 	-- value truncation always match p.w/p.h
 	m.W, m.H = p.w, p.h
 	local W, H = m.W, m.H
+	local card_w = W - PAD * 2
+	local CR = PAD + card_w
 
-	local header_h = p:draw_header(I.t("System Info"), Util.keybind_hint(ctx, "toggle_sysinfo"), PAD)
+	local groups = M.rows or gather(ctx)
+
+	-- content is painted FIRST; the fixed chrome (footer, header) is painted
+	-- on top further down, which clips overflowing rows without a scissor
+
+	local y = m.HEADER_H + TOP_PAD
 
 	local host = os.getenv("USER") or "?"
 	local hostname = read_first("/proc/sys/kernel/hostname") or "?"
 	local osrel = read_all("/etc/os-release") or ""
 	local distro = osrel:match('PRETTY_NAME="([^"]+)"') or "Linux"
 
-	-- macOS-style title: accent dot + user@host, distro subtitle
-	local y = header_h + 14
+	-- hero: accent dot + user@host, distro subtitle
 	p:rrect(PAD, y + math.floor((lh - 10) / 2), 10, 10, 5, T.primary)
 	p:text(PAD + 20, y, host .. "@" .. hostname, T.on_var)
 	y = y + lh + 4
 	p:text(PAD + 20, y, distro, T.hint)
 	y = y + lh + 10
 
-	local row_h = m.ROW_H
-	local rows = M.rows or gather(ctx)
-	for i, r in ipairs(rows) do
-		if r.sep then
-			y = y + 6
-			p:rect(PAD, y + math.floor(row_h / 2) - 1, W - PAD * 2, 1, T.outline)
-			y = y + row_h + 2
-		else
-			-- inset hairline between rows in the same group
-			local next_sep = not rows[i + 1] or rows[i + 1].sep
-			if not next_sep then
-				p:rect(PAD, y + row_h - 1, W - PAD * 2, 1, T.outline)
+	for gi, g in ipairs(groups) do
+		if #g.rows > 0 then
+			y = y + GROUP_GAP
+			p:text(PAD + 6, y + m.TITLE_H - lh - 2, I.t(g.title), T.hint)
+			y = y + m.TITLE_H
+			local card_h = #g.rows * m.ROW_H + 12
+			p:rrect(PAD, y, card_w, card_h, CARD_R, T.surface)
+			local ry = y + 6
+			for ri, r in ipairs(g.rows) do
+				local ty = ry + math.floor((m.ROW_H - lh) / 2)
+				local label = I.t(r.k)
+				p:text(PAD + 16, ty, label, T.on_var)
+				local max_w = CR - 16 - (PAD + 16 + select(1, ctx.get_text_size(label)) + 12)
+				local v = truncate(ctx, r.v, max_w)
+				local vw = select(1, ctx.get_text_size(v))
+				p:text(CR - 16 - vw, ty, v, T.hint)
+				-- inset hairline between rows in the same group card
+				if ri < #g.rows then
+					p:rect(PAD + 16, ry + m.ROW_H - 1, card_w - 32, 1, T.outline)
+				end
+				ry = ry + m.ROW_H
 			end
-			local vw = select(1, ctx.get_text_size(r.v))
-			local max_w = W - PAD * 2 - select(1, ctx.get_text_size(I.t(r.k))) - 40
-			p:text(PAD, y + 3, I.t(r.k), T.hint)
-			p:text(W - PAD - vw, y + 3, truncate(ctx, r.v, max_w), T.on_surface)
-			y = y + row_h
+			y = y + card_h + ROW_GAP
 		end
 	end
 
-	local by = H - lh - 12
-	p:rect(PAD, by - 8, W - PAD * 2, 1, T.outline)
+	-- fixed chrome painted last so content can never overlap it
+
+	-- footer: opaque band with a 1px outline separator on top
+	local fy = H - m.FOOTER_H
+	p:rect(0, fy, W, m.FOOTER_H, p.bg)
+	p:rect(PAD, fy, W - PAD * 2, 1, T.outline)
+	local by = fy + math.floor((m.FOOTER_H - lh) / 2)
 	p:text(PAD, by, I.t("live refresh · 2s"), T.hint)
 	local src = I.t(probe.done and "procfs + probe" or "procfs")
 	p:text(W - PAD - select(1, ctx.get_text_size(src)), by, src, T.hint)
+
+	-- header last: opaque fill also covers anything under the top edge
+	p:draw_header(I.t("System Info"), Util.keybind_hint(ctx, "toggle_sysinfo"), PAD)
 end
 
 function M.width(ctx)
@@ -297,12 +341,20 @@ end
 -- auto-fit: the natural size depends on the gathered rows (probe rows for
 -- gpu/pkg/disk/ip appear asynchronously), so re-fit when the row count or
 -- probe state changed; fit() itself no-ops when unchanged or user-resized
+local function row_count()
+	local n = 0
+	for _, g in ipairs(M.rows or {}) do
+		n = n + #g.rows
+	end
+	return n
+end
+
 local function refit_if_changed()
 	local p = M.panel
 	if not p then
 		return
 	end
-	local key = #M.rows .. "/" .. (probe.done and "p" or "-")
+	local key = row_count() .. "/" .. (probe.done and "p" or "-")
 	if key ~= M._fit_key then
 		M._fit_key = key
 		p:fit()
@@ -340,7 +392,7 @@ function M.init(ctx)
 
 	M.rows = gather(ctx)
 	M.refresh_acc = 0
-	M._fit_key = #M.rows .. "/" .. (probe.done and "p" or "-")
+	M._fit_key = row_count() .. "/" .. (probe.done and "p" or "-")
 
 	log("ready")
 end
