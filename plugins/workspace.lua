@@ -247,7 +247,7 @@ function M.width(ctx)
 	if not backend or not joined or joined == "" then
 		return 0
 	end
-	return 8 + select(1, ctx.get_text_size(I.t("WS") .. " " .. joined))
+	return 8 + ctx.text_width(I.t("WS") .. " " .. joined)
 end
 
 function M.tick(ctx, dt)
@@ -290,8 +290,8 @@ function M.draw(ctx, s, x, y, w, h)
 	local T = ctx.theme
 	local px = x + 4
 	s:text(px, ty, I.t("WS") .. " ", T.fg)
-	px = px + select(1, ctx.get_text_size(I.t("WS") .. " "))
-	local sp = select(1, ctx.get_text_size(" "))
+	px = px + ctx.text_width(I.t("WS") .. " ")
+	local sp = ctx.text_width(" ")
 	-- per-number hit spans; x relative to the item start (the click
 	-- handler receives lx = mx - item_x)
 	M.hits = {}
@@ -300,7 +300,7 @@ function M.draw(ctx, s, x, y, w, h)
 			px = px + sp
 		end
 		s:text(px, ty, e.tok, e.focused and T.primary or T.fg)
-		local tw = select(1, ctx.get_text_size(e.tok))
+		local tw = ctx.text_width(e.tok)
 		M.hits[#M.hits + 1] = { x = px - x, w = tw, id = e.id, focused = e.focused }
 		px = px + tw
 	end

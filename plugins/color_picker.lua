@@ -228,7 +228,7 @@ local function do_draw(p)
 	}
 	local cx = PAD
 	for _, c in ipairs(chips) do
-		local cw = select(1, ctx.get_text_size(c.label)) + 28
+		local cw = ctx.text_width(c.label) + 28
 		if ui:id_button(c.id, cx, m.CHIP_Y, cw, m.CHIP_H, c.label, { tonal = true, radius = math.floor(m.CHIP_H / 2) }) then
 			copy_value(ctx, c.val)
 		end
@@ -247,7 +247,7 @@ local function in_hue(p, mx, my)
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size(I.t("Pick"))) + 20
+	return ctx.text_width(I.t("Pick")) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)

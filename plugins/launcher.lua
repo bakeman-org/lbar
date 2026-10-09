@@ -25,7 +25,7 @@ end
 
 -- rough char budget for a pixel width (commands are mostly ASCII)
 local function fit_chars(ctx, avail)
-	local cw = select(1, ctx.get_text_size("n"))
+	local cw = ctx.text_width("n")
 	return math.max(2, math.floor(avail / math.max(4, cw)))
 end
 
@@ -109,8 +109,8 @@ local function build_model(ctx, user_size)
 		PAD = PAD,
 		W = 520,
 		APPBAR = lh + 26,
-		IN_H = lh + 20,
-		SEARCH_H = 14 + (lh + 20) + 12,
+		IN_H = lh + 24,
+		SEARCH_H = 14 + (lh + 24) + 12,
 		ROW_H = row_h(lh),
 		ROW_GAP = ROW_GAP,
 		FOOTER_H = lh + 30,
@@ -172,11 +172,11 @@ local function do_draw(p)
 		p:text(PAD + 36, ty, name, sel and T.on_surface or T.on_var)
 		-- command right-aligned, truncated to the space next to the name
 		local cmd = e.cmd
-		local avail = CR - 16 - (PAD + 36 + select(1, ctx.get_text_size(name)) + 12)
-		if select(1, ctx.get_text_size(cmd)) > avail then
+		local avail = CR - 16 - (PAD + 36 + ctx.text_width(name) + 12)
+		if ctx.text_width(cmd) > avail then
 			cmd = truncate(cmd, fit_chars(ctx, math.max(40, avail)))
 		end
-		p:text(CR - 16 - select(1, ctx.get_text_size(cmd)), ty, cmd, T.hint)
+		p:text(CR - 16 - ctx.text_width(cmd), ty, cmd, T.hint)
 		if ui:clicked(PAD, ry, card_w, m.ROW_H) then
 			-- never launch mid-draw: queue for M.tick (pcall'd there)
 			M.pending_launch = e
@@ -186,7 +186,7 @@ local function do_draw(p)
 	if n == 0 then
 		local empty = M.query ~= "" and I.t("no matching apps, press Enter to run as command")
 			or I.t("configure apps in config.lua launcher.entries")
-		local ew = select(1, ctx.get_text_size(empty))
+		local ew = ctx.text_width(empty)
 		local ey = m.view_y + math.floor(math.max(0, m.view_h - lh) / 2)
 		p:text(math.floor(W / 2 - ew / 2), ey, empty, T.hint)
 	end

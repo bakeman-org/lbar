@@ -67,7 +67,7 @@ function UI:label(x, y_top, text, color, bg)
 		self.surf:rect(
 			x - 2,
 			y_top - 2,
-			select(1, self.ctx.get_text_size(text)) + 4,
+			self.ctx.text_width(text) + 4,
 			self.ctx.get_line_height() + 4,
 			bg
 		)
@@ -80,7 +80,7 @@ function UI:label_c(x, y_top, w, text, color, bg)
 	if bg then
 		self.surf:rect(x, y_top - 2, w, self.ctx.get_line_height() + 4, bg)
 	end
-	local tw = select(1, self.ctx.get_text_size(text))
+	local tw = self.ctx.text_width(text)
 	self.surf:text(math.floor(x + w / 2 - tw / 2), y_top, text, color or T.on_surface)
 end
 
@@ -102,7 +102,7 @@ function UI:id_button(id, x, y, w, h, text, opts)
 	local r = opts.radius or math.floor(h / 2)
 	self.surf:rrect(x, y, w, h, r, bg)
 	local lh = self.ctx.get_line_height()
-	local tw = select(1, self.ctx.get_text_size(text))
+	local tw = self.ctx.text_width(text)
 	self.surf:text(math.floor(x + w / 2 - tw / 2), math.floor(y + h / 2 - lh / 2), text, fg)
 	return self:clicked(x, y, w, h)
 end
@@ -196,7 +196,7 @@ function UI:segmented(x, y, w, h, items, active_idx)
 			self.surf:rrect(sx + 3, y + 3, sw - 6, h - 6, math.floor((h - 6) / 2), T.bg)
 		end
 		local text = items[i]
-		local tw = select(1, self.ctx.get_text_size(text))
+		local tw = self.ctx.text_width(text)
 		self.surf:text(math.floor(sx + (sw - tw) / 2), math.floor(y + (h - lh) / 2), text,
 			active and T.primary or T.hint)
 		if clicked == 0 and self:clicked(sx, y, sw, h) then

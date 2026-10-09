@@ -52,7 +52,7 @@ end
 local function build_model(ctx, user_size)
 	local lh = ctx.get_line_height()
 	local tw = function(str)
-		return select(1, ctx.get_text_size(str))
+		return ctx.text_width(str)
 	end
 	local groups = {}
 	local order = {}
@@ -142,7 +142,7 @@ local function do_draw(p)
 	st.scroll = clamp(st.scroll, 0, m.max_scroll)
 	local W, H = m.W, m.H
 	local tw = function(str)
-		return select(1, ctx.get_text_size(str))
+		return ctx.text_width(str)
 	end
 
 	local view_top = m.APPBAR
@@ -203,7 +203,7 @@ local function do_draw(p)
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size(I.t("Keys"))) + 20
+	return ctx.text_width(I.t("Keys")) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)

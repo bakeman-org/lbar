@@ -64,7 +64,7 @@ local function build_model(ctx, user_size)
 	m.TF_LBL_Y = cy
 	cy = cy + m.SEC_H
 	m.TF_Y = cy
-	m.TF_H = lh + 16
+	m.TF_H = lh + 24
 	cy = cy + m.TF_H + 14
 	m.CONTROLS_H = cy - y
 
@@ -146,7 +146,7 @@ local function draw_controls(p)
 	local cx = PAD
 	for i, c0 in ipairs(chips) do
 		local c = I.t(c0)
-		local cw = select(1, ctx.get_text_size(c)) + 28
+		local cw = ctx.text_width(c) + 28
 		if ui:id_button("demo_chip" .. i, cx, m.CHIP_Y, cw, m.CHIP_H, c, { tonal = true, radius = math.floor(m.CHIP_H / 2) }) then
 			ctx.notify(I.t("chip: %s", c), { style = "info" })
 		end
@@ -360,7 +360,7 @@ local function draw_windows(p)
 		p:rrect(PAD, r.y, inner, m.PAN_ROW_H, 14, T.surface)
 		local ty = r.y + math.floor((m.PAN_ROW_H - lh) / 2)
 		p:text(PAD + 16, ty, r.label, T.on_var)
-		local vw = select(1, ctx.get_text_size(r.value))
+		local vw = ctx.text_width(r.value)
 		p:text(W - PAD - 16 - vw, ty, r.value, T.hint)
 	end
 
@@ -431,7 +431,7 @@ local function draw_inventory(p)
 			local y2 = m.PAN_Y + row * m.PAN_ROW_H
 			p:text(x, y2, pname, T.on_var)
 			local hint = Util.keybind_hint(ctx, kb.action)
-			p:text(x + col_w - select(1, ctx.get_text_size(hint)), y2, hint, T.hint)
+			p:text(x + col_w - ctx.text_width(hint), y2, hint, T.hint)
 			col = col + 1
 			if col == 2 then
 				col = 0
@@ -454,9 +454,9 @@ local function do_draw(p)
 	local title = I.t("UI Components")
 	local hy = p:draw_header(title, Util.keybind_hint(ctx, "toggle_ui_demo"), PAD)
 	local tag = tostring(ctx.theme.name or "theme")
-	local tag_w = select(1, ctx.get_text_size(tag))
+	local tag_w = ctx.text_width(tag)
 	local tag_x = p.rect_close.x - 12 - tag_w
-	if tag_x > PAD + select(1, ctx.get_text_size(title)) + 12 then
+	if tag_x > PAD + ctx.text_width(title) + 12 then
 		p:text(tag_x, hy, tag, T.hint)
 	end
 
@@ -496,7 +496,7 @@ function M.tick(ctx, dt)
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size(I.t("UI demo"))) + 20
+	return ctx.text_width(I.t("UI demo")) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)

@@ -61,7 +61,7 @@ local function do_draw(p)
 	local W, PAD = m.W, m.PAD
 	local card_w = W - PAD * 2
 	local tw = function(str)
-		return select(1, ctx.get_text_size(str))
+		return ctx.text_width(str)
 	end
 
 	-- scrollable content is painted FIRST; the fixed chrome (footer, header)
@@ -122,7 +122,7 @@ function M.bar_label()
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size(M.bar_label())) + 20
+	return ctx.text_width(M.bar_label()) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)

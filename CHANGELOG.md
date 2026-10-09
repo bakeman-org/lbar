@@ -458,6 +458,23 @@ make 全量编译过（6 文件）；test_multipanel2 更新为 19 断言（A au
 
 ---
 
+## 101. X11 性能优化 + 输入框增高 + 电源右置 + 中文文档 + 结构精简
+
+### (a) X11 渲染性能（src/backends.c）
+拖拽卡顿/多面板缓慢/按钮延迟三根因：① x_flush_pixels 每帧 XCreateImage + calloc（约 1.3MB mmap page faults）+ XPutImage 全量上传 + XDestroyImage（munmap）——改为 x_img_t 缓存（bar + 每面板各一份，尺寸变化才重建），并接入 MIT-SHM 零拷贝（XShmQueryExtension 探测，XShmPutImage send_event=True；completion 事件清 busy；busy 期间丢帧，>250ms 超时解锁，drop_pending 时补发 expose 触发 Lua 重绘防 stale UI；shm 不可用永久回退 plain XPutImage）。② X11 motion 事件未合并——drain_x11_events 中同窗口同面板的 motion 只保留最后一条（125Hz 鼠标不再每条触发全量 Lua draw）。③ 主循环 tick 用硬编码 16ms 假 dt，慢帧时 toast deadline/动画计时漂移——lbar.lua 记录真实循环 dt 传给 p:tick/toast:tick。Wayland 侧 flush 的 wl_display_roundtrip 门控到仅未 configure 时执行，稳定帧只 dispatch_pending。
+### (b) 输入框高度统一 lh+24（launcher/clip_hist/sysmon/wifi/settings/clock/music_player/file_dialog/ui_demo）
+text_field/TI:set_rect 高度统一为行高 +24，搜索框、行内输入、底部输入行全部同步增大，可读性提升。
+### (c) bar 布局右置托盘（config.lua plugins）
+plugins 重排为左→右：信息区（logo/workspace/cpu/mem/launcher）→ 应用面板（keybinds_help/clip_hist/pomodoro/music_player/weather/sysinfo/sysmon/color_picker/ui_demo）→ 系统托盘（hide_all/settings/wallpaper/wifi/volume/battery/clock）。电源菜单（battery 内）随 battery 位于最右段，clock 收尾。
+### (d) 内存优化
+随 (a) 的图像缓存 + shm RMID（进程死即回收）覆盖——消除每帧 mmap churn，无新增 Lua 侧常驻。
+### (e) 中文文档
+config.lua 全文重写为中文分区注释（键值不变，dofile 验证 21 插件加载）；docs/config.md 全文中文化（顶层键/主题/插件/快捷键/面板位置/动画/自适应尺寸/各插件配置节，补 X11 SHM 性能说明）；README.md 从空写成中文项目文档（特性/构建/快捷键表/结构树）；删除无引用的 core/widgets.lua（50 行遗留控件库）。
+### 验证
+make 编译 0 warning；i18n_check 319 键 0 缺失；test_multipanel2（19）+ test_sysmon2（9，高度断言改为镜像插件公式的机器无关算式，适配真实核心数）+ test_font_hotreload（12）+ test_savevalue + test_ti_scroll ALL PASS。
+
+---
+
 ## 迁移说明
 
 本文件于 2026-10-08 由项目历史 TODO 日志（第 1–90 条，按时间从旧到新）迁移整理而成，原 TODO 文件已删除。

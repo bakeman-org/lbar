@@ -153,7 +153,7 @@ end
 
 -- rough char budget for a pixel width (paths are mostly ASCII)
 local function fit_chars(ctx, avail)
-	local cw = select(1, ctx.get_text_size("n"))
+	local cw = ctx.text_width("n")
 	return math.max(2, math.floor(avail / math.max(4, cw)))
 end
 
@@ -249,7 +249,7 @@ local function build_model(ctx, user_size)
 		PAD = 20,
 		GAP = 10,
 		HEAD_H = lh + 26,
-		LOC_H = lh + 14,
+		LOC_H = lh + 24,
 		ROW_H = lh + 12,
 		FOOT_H = lh + 24,
 	}
@@ -354,8 +354,8 @@ local function do_draw(p)
 	p:rect(PAD, fy, W - PAD * 2, 1, T.outline)
 	local bh = lh + 12
 	local by = fy + math.floor((m.H - fy - bh) / 2)
-	local bw_c = math.max(72, select(1, ctx.get_text_size(I.t("cancel"))) + 28)
-	local bw_o = math.max(72, select(1, ctx.get_text_size(I.t("ok"))) + 28)
+	local bw_c = math.max(72, ctx.text_width(I.t("cancel")) + 28)
+	local bw_o = math.max(72, ctx.text_width(I.t("ok")) + 28)
 	local ox = W - PAD - bw_o
 	local cx = ox - 10 - bw_c
 	if ui:id_button("fd_cancel", cx, by, bw_c, bh, I.t("cancel"), { tonal = true }) then

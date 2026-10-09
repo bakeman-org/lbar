@@ -236,13 +236,13 @@ local function build_model(ctx, user_size)
 end
 
 local function truncate(ctx, value, max_w)
-	if select(1, ctx.get_text_size(value)) <= max_w then
+	if ctx.text_width(value) <= max_w then
 		return value
 	end
 	local cut = #value
 	while cut > 0 do
 		local sub = value:sub(1, cut)
-		if select(1, ctx.get_text_size(sub .. "…")) <= max_w then
+		if ctx.text_width(sub .. "…") <= max_w then
 			return sub .. "…"
 		end
 		cut = cut - 1
@@ -293,9 +293,9 @@ local function do_draw(p)
 				local ty = ry + math.floor((m.ROW_H - lh) / 2)
 				local label = I.t(r.k)
 				p:text(PAD + 16, ty, label, T.on_var)
-				local max_w = CR - 16 - (PAD + 16 + select(1, ctx.get_text_size(label)) + 12)
+				local max_w = CR - 16 - (PAD + 16 + ctx.text_width(label) + 12)
 				local v = truncate(ctx, r.v, max_w)
-				local vw = select(1, ctx.get_text_size(v))
+				local vw = ctx.text_width(v)
 				p:text(CR - 16 - vw, ty, v, T.hint)
 				-- inset hairline between rows in the same group card
 				if ri < #g.rows then
@@ -316,7 +316,7 @@ local function do_draw(p)
 	local by = fy + math.floor((m.FOOTER_H - lh) / 2)
 	p:text(PAD, by, I.t("live refresh · 2s"), T.hint)
 	local src = I.t(probe.done and "procfs + probe" or "procfs")
-	p:text(W - PAD - select(1, ctx.get_text_size(src)), by, src, T.hint)
+	p:text(W - PAD - ctx.text_width(src), by, src, T.hint)
 
 	-- header last: opaque fill also covers anything under the top edge
 	p:draw_header(I.t("System Info"), Util.keybind_hint(ctx, "toggle_sysinfo"), PAD)

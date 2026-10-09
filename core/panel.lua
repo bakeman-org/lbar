@@ -63,6 +63,8 @@ function M.new(ctx, opts)
 	self.last_anchor = nil
 	self.mx, self.my = -1, -1
 	self._drawing = false
+	self._motion_ts = 0
+	self._motion_dirty = false
 	self.user_size = nil
 	self.draggable = opts.draggable ~= false
 	self._drag = nil
@@ -289,7 +291,7 @@ function Panel:header_close(h)
 	self:rrect(r.x, r.y, r.w, r.h, 8, hover and T.surface_hover or T.surface_hi)
 	local lh = ctx.get_line_height()
 	local hy = math.floor((h - lh) / 2)
-	local xs = select(1, ctx.get_text_size("×"))
+	local xs = ctx.text_width("×")
 	self:text(r.x + math.floor((r.w - xs) / 2), hy, "×", T.on_var)
 	return r
 end
@@ -304,9 +306,9 @@ function Panel:draw_header(title, hint, pad)
 	self:text(pad, hy, title, T.primary)
 	local r = self:header_close(H)
 	if hint then
-		local hw = select(1, ctx.get_text_size(hint))
+		local hw = ctx.text_width(hint)
 		local hx = r.x - 12 - hw
-		if hx > pad + select(1, ctx.get_text_size(title)) + 12 then
+		if hx > pad + ctx.text_width(title) + 12 then
 			self:text(hx, hy, hint, T.hint)
 		end
 	end
@@ -588,6 +590,13 @@ function Panel:hide(instant)
 end
 
 function Panel:tick(dt)
+	-- deferred motion draw: on_motion throttled this draw; flush it now so
+	-- the hover/highlight state is never more than one frame stale
+	if self._motion_dirty then
+		self._motion_dirty = false
+		self._motion_ts = 0
+		self:draw()
+	end
 	if self._need_fit then
 		self._need_fit = false
 		self:fit()
@@ -706,7 +715,17 @@ function Panel:on_motion(mx, my, rx, ry)
 	if self.opts.on_motion then
 		self.opts.on_motion(self, mx, my, rx, ry)
 	end
-	self:draw()
+	-- throttle motion redraws to ~30fps: a 125Hz mouse can deliver a motion
+	-- every 8ms but the draw cost (text layout, rrect AA) makes 60fps redraws
+	-- feel choppy. Skip this draw and let Panel:tick pick it up next frame.
+	local now = self.ctx._now_ms or 0
+	if now - self._motion_ts >= 33 then
+		self._motion_ts = now
+		self._motion_dirty = false
+		self:draw()
+	else
+		self._motion_dirty = true
+	end
 end
 
 function Panel:on_press(btn, mx, my, rx, ry)

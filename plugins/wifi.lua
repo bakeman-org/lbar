@@ -287,7 +287,7 @@ local function compute_layout(ctx, lh)
 	m.BTN_H = lh + 14
 	m.SECT_H = lh + 12
 	m.ROW_H = lh + 22
-	m.FOOTER_H = lh + 24
+	m.FOOTER_H = lh + 40
 	m.BOT_MARGIN = 16
 	m.fixed = m.HEADER_H + 12 + m.STATUS_H + 12 + m.BTN_H + 12
 		+ m.SECT_H + 12 + m.FOOTER_H + m.BOT_MARGIN
@@ -365,7 +365,7 @@ local function do_draw(p)
 	p:text(PAD + 4, ty, I.t("wifi networks"), T.hint)
 	if M.scanning then
 		local s = I.t("scanning…")
-		local sw = select(1, ctx.get_text_size(s))
+		local sw = ctx.text_width(s)
 		p:text(W - PAD - 4 - sw, ty, s, T.hint)
 	end
 
@@ -394,14 +394,14 @@ local function do_draw(p)
 		p:rrect(PAD, ry + 3, list_w, m.ROW_H - 6, 12, bg)
 		local text_y = ry + math.floor((m.ROW_H - lh) / 2)
 		local pct_s = tostring(net.signal) .. "%"
-		local pct_w = select(1, ctx.get_text_size(pct_s))
+		local pct_w = ctx.text_width(pct_s)
 		local pct_x = PAD + list_w - 12 - pct_w
 		local pill_x = pct_x - 10 - 28
 		local lock_x = pill_x - 12
 		local name_max = lock_x - (PAD + 12) - 12
 		local name = net.ssid
-		if select(1, ctx.get_text_size(name)) > name_max then
-			while #name > 4 and select(1, ctx.get_text_size(name .. "…")) > name_max do
+		if ctx.text_width(name) > name_max then
+			while #name > 4 and ctx.text_width(name .. "…") > name_max do
 				name = name:sub(1, -2)
 			end
 			name = name .. "…"
@@ -426,7 +426,7 @@ local function do_draw(p)
 		local inner_x = PAD + 12
 		local btn_w = 56
 		local iw = (W - PAD * 2 - 24) - btn_w * 2 - 16
-		local row_h = lh + 10
+		local row_h = lh + 24
 		local row_y = fy + math.floor((m.FOOTER_H - row_h) / 2)
 		p.input:set_rect(inner_x, row_y, iw, row_h)
 		p.input:draw(p)

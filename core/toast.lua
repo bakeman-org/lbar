@@ -36,7 +36,7 @@ local function resolve_style(ctx, s)
 end
 
 local function wrap_text(ctx, text, max_w, max_lines)
-	if select(1, ctx.get_text_size(text)) <= max_w then
+	if ctx.text_width(text) <= max_w then
 		return text, 1
 	end
 	local lines = {}
@@ -57,7 +57,7 @@ local function wrap_text(ctx, text, max_w, max_lines)
 				return table.concat(lines, "\n"), line_count
 			end
 		else
-			local cw = select(1, ctx.get_text_size(ch))
+			local cw = ctx.text_width(ch)
 			if buf_w + cw > max_w and #buf > 0 then
 				lines[#lines + 1] = table.concat(buf)
 				buf = { ch }

@@ -2,6 +2,8 @@
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,6 +20,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/shape.h>
+#include <X11/extensions/XShm.h>
 
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
@@ -258,6 +261,19 @@ static void zwp_ti_commit(struct zwp_text_input_v3 *ti) {
 #define LBAR_EV_TEXT_MAX 512
 #define LBAR_POPUP_MAX 32
 
+/* per-window reusable X11 upload image. recreating the XImage (with its
+ * calloc/mmap churn) every frame was the main X11 stall; MIT-SHM is used
+ * when the server supports it so uploads skip the socket copy entirely */
+typedef struct {
+  XImage *img;
+  void *data;
+  int w, h;
+  XShmSegmentInfo *shm;
+  int busy;         /* shm upload in flight, buffer must not be touched */
+  int drop_pending; /* a frame was dropped while busy: redraw on completion */
+  uint32_t busy_ms;
+} x_img_t;
+
 typedef struct {
   int type; /* 1=motion 2=press 3=release 4=expose/popup-hidden 5=key
                6=ime-commit 7=ime-preedit */
@@ -278,6 +294,7 @@ typedef struct {
   /* X11 */
   Window x_win;
   GC x_gc;
+  x_img_t img;
   /* Wayland */
   struct wl_surface *surf;
   struct zwlr_layer_surface_v1 *layer;
@@ -305,6 +322,9 @@ typedef struct lbar_ctx {
   Window x_bar_win;
   GC x_bar_gc;
   int x_bar_w, x_bar_h;
+  x_img_t bar_img;
+  int x_shm_ok;
+  int shm_ev_base;
 
   lbar_popup_t popups[LBAR_POPUP_MAX];
   int n_popups;
@@ -1247,8 +1267,11 @@ static int x_open(lbar_ctx *c) {
   c->screen_w = DisplayWidth(c->x_dpy, c->x_screen);
   c->screen_h = DisplayHeight(c->x_dpy, c->x_screen);
   XSelectInput(c->x_dpy, c->x_root, KeyPressMask);
-  LOG_INFO("x11 connected: %dx%d depth=%d", c->screen_w, c->screen_h,
-           c->x_depth);
+  int evb = XShmGetEventBase(c->x_dpy);
+  c->shm_ev_base = evb;
+  c->x_shm_ok = (evb >= 0 && XShmQueryExtension(c->x_dpy)) ? 1 : 0;
+  LOG_INFO("x11 connected: %dx%d depth=%d shm=%s", c->screen_w, c->screen_h,
+           c->x_depth, c->x_shm_ok ? "yes" : "no");
   LOG_INFO("x11: no IME support (XIM out of scope) — ctrl+v clipboard paste "
            "only");
   return 0;
@@ -1468,34 +1491,135 @@ int lbar_bar_create(lbar_ctx *c, int h, int pos, int margin) {
                        : x_create_bar(c, h, pos, margin);
 }
 
-static void x_flush_pixels(lbar_ctx *c, Window win, GC gc,
-                           const uint32_t *pixels, int w, int h) {
+/* release a cached upload image (plain or MIT-SHM) */
+static void x_img_free(lbar_ctx *c, x_img_t *s) {
+  (void)c;
+  if (s->shm) {
+    if (s->img)
+      XShmDetach(c->x_dpy, s->shm);
+    if (s->img)
+      XDestroyImage(s->img); /* shm images free the struct, not the data */
+    if (s->data && s->data != (void *)-1)
+      shmdt(s->data);
+    free(s->shm); /* segment was IPC_RMID'd: dies once fully detached */
+  } else if (s->img) {
+    XDestroyImage(s->img); /* plain images own their data */
+  }
+  memset(s, 0, sizeof(*s));
+}
+
+/* make the slot hold a w*h image, reusing or rebuilding as needed */
+static int x_img_ensure(lbar_ctx *c, x_img_t *s, int w, int h) {
+  if (s->img && s->w == w && s->h == h)
+    return 0;
+  x_img_free(c, s);
   Visual *vis = DefaultVisual(c->x_dpy, c->x_screen);
-  XImage *img =
-      XCreateImage(c->x_dpy, vis, (unsigned int)c->x_depth, ZPixmap, 0, NULL,
-                   w, h, 32, 0);
-  if (!img)
-    return;
-  img->data = calloc(1, (size_t)img->bytes_per_line * (size_t)h);
-  if (!img->data) {
-    img->data = NULL;
-    XDestroyImage(img);
+  if (c->x_shm_ok) {
+    XShmSegmentInfo *si = calloc(1, sizeof(*si));
+    XImage *im = XShmCreateImage(c->x_dpy, vis, (unsigned int)c->x_depth,
+                                 ZPixmap, NULL, si, (unsigned int)w,
+                                 (unsigned int)h);
+    if (im) {
+      size_t sz = (size_t)im->bytes_per_line * (size_t)im->height;
+      si->shmid = shmget(IPC_PRIVATE, sz, IPC_CREAT | 0600);
+      if (si->shmid >= 0) {
+        si->shmaddr = shmat(si->shmid, NULL, 0);
+        si->readOnly = False;
+        if (si->shmaddr != (void *)-1) {
+          im->data = si->shmaddr;
+          shmctl(si->shmid, IPC_RMID, NULL); /* die with the process */
+          if (XShmAttach(c->x_dpy, si)) {
+            XFlush(c->x_dpy);
+            s->img = im;
+            s->data = si->shmaddr;
+            s->w = w;
+            s->h = h;
+            s->shm = si;
+            return 0;
+          }
+          shmdt(si->shmaddr);
+          im->data = NULL;
+        }
+        shmctl(si->shmid, IPC_RMID, NULL);
+      }
+      XDestroyImage(im);
+    }
+    free(si);
+    c->x_shm_ok = 0; /* shm setup failed: stop retrying every frame */
+    LOG_WARN("MIT-SHM unavailable, falling back to XPutImage");
+  }
+  XImage *im = XCreateImage(c->x_dpy, vis, (unsigned int)c->x_depth, ZPixmap,
+                            0, NULL, (unsigned int)w, (unsigned int)h, 32, 0);
+  if (!im)
+    return -1;
+  im->data = calloc(1, (size_t)im->bytes_per_line * (size_t)h);
+  if (!im->data) {
+    XDestroyImage(im);
+    return -1;
+  }
+  s->img = im;
+  s->data = im->data;
+  s->w = w;
+  s->h = h;
+  return 0;
+}
+
+/* completion event for a shm upload: free the buffer, and if a frame was
+ * dropped while busy schedule a redraw so the UI never stays stale */
+static void x_shm_completed(lbar_ctx *c, ShmSeg shmseg) {
+  if (c->bar_img.shm && c->bar_img.shm->shmseg == shmseg) {
+    c->bar_img.busy = 0;
+    if (c->bar_img.drop_pending) {
+      c->bar_img.drop_pending = 0;
+      ev_push(c, 4, 0, 0, 0, 0, 0, 0, 0, 0, -1);
+    }
     return;
   }
-  if (img->bits_per_pixel == 32) {
+  for (int i = 0; i < c->n_popups; i++) {
+    x_img_t *s = &c->popups[i].img;
+    if (s->shm && s->shm->shmseg == shmseg) {
+      s->busy = 0;
+      if (s->drop_pending) {
+        s->drop_pending = 0;
+        ev_push(c, 4, 0, 0, 0, 0, 0, 1, 0, 0, i);
+      }
+      return;
+    }
+  }
+}
+
+static void x_flush_pixels(lbar_ctx *c, Window win, GC gc, x_img_t *s,
+                           const uint32_t *pixels, int w, int h) {
+  if (x_img_ensure(c, s, w, h) != 0)
+    return;
+  if (s->busy) {
+    /* previous shm upload still in flight: touching the buffer would tear.
+     * drop this frame and redraw when the server reports completion */
+    if (now_ms() - s->busy_ms < 250)
+      return;
+    s->busy = 0; /* completion apparently lost: unblock */
+  }
+  if (s->img->bits_per_pixel == 32) {
     for (int y = 0; y < h; y++) {
-      memcpy(img->data + (size_t)y * img->bytes_per_line,
+      memcpy((char *)s->data + (size_t)y * s->img->bytes_per_line,
              pixels + (size_t)y * w, (size_t)w * 4);
     }
   } else {
     for (int y = 0; y < h; y++)
       for (int x = 0; x < w; x++)
-        XPutPixel(img, x, y, pixels[(size_t)y * w + x]);
+        XPutPixel(s->img, x, y, pixels[(size_t)y * w + x]);
   }
   XSetFunction(c->x_dpy, gc, GXcopy);
-  XPutImage(c->x_dpy, win, gc, img, 0, 0, 0, 0, w, h);
+  if (s->shm) {
+    XShmPutImage(c->x_dpy, win, gc, s->img, 0, 0, 0, 0, (unsigned int)w,
+                 (unsigned int)h, True);
+    s->busy = 1;
+    s->busy_ms = now_ms();
+  } else {
+    XPutImage(c->x_dpy, win, gc, s->img, 0, 0, 0, 0, (unsigned int)w,
+              (unsigned int)h);
+  }
   XFlush(c->x_dpy);
-  XDestroyImage(img);
 }
 
 void lbar_bar_flush(lbar_ctx *c, const uint32_t *pixels) {
@@ -1503,7 +1627,13 @@ void lbar_bar_flush(lbar_ctx *c, const uint32_t *pixels) {
     if (!c->bar_configured)
       return;
     wl_display_dispatch_pending(c->wl_dpy);
-    wl_display_roundtrip(c->wl_dpy);
+    /* roundtrip only while the first configure is still outstanding:
+     * per-frame roundtrips stall the pipeline */
+    if (!c->bar_configured) {
+      wl_display_roundtrip(c->wl_dpy);
+      if (!c->bar_configured)
+        return;
+    }
     if (c->bar_map_w != c->bar_w || c->bar_map_h != c->bar_h) {
       if (recreate_bar_buffer(c) < 0)
         return;
@@ -1517,7 +1647,8 @@ void lbar_bar_flush(lbar_ctx *c, const uint32_t *pixels) {
     wl_display_flush(c->wl_dpy);
     c->bar_busy = 1;
   } else {
-    x_flush_pixels(c, c->x_bar_win, c->x_bar_gc, pixels, c->bar_w, c->bar_h);
+    x_flush_pixels(c, c->x_bar_win, c->x_bar_gc, &c->bar_img, pixels, c->bar_w,
+                   c->bar_h);
   }
 }
 
@@ -1559,6 +1690,7 @@ static void popup_destroy_slot(lbar_ctx *c, lbar_popup_t *p) {
     if (p->pix)
       munmap(p->pix, (size_t)p->map_w * 4 * (size_t)p->map_h);
   } else {
+    x_img_free(c, &p->img);
     if (p->x_gc)
       XFreeGC(c->x_dpy, p->x_gc);
     if (p->x_win)
@@ -1901,14 +2033,15 @@ void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels, int sw,
     if (!p->visible)
       return;
     if (!p->configured) {
-      p->flush_pending = 1;
-      return;
-    }
-    wl_display_dispatch_pending(c->wl_dpy);
-    wl_display_roundtrip(c->wl_dpy);
-    if (!p->configured) {
-      p->flush_pending = 1;
-      return;
+      wl_display_dispatch_pending(c->wl_dpy);
+      if (!p->configured)
+        wl_display_roundtrip(c->wl_dpy);
+      if (!p->configured) {
+        p->flush_pending = 1;
+        return;
+      }
+    } else {
+      wl_display_dispatch_pending(c->wl_dpy);
     }
     if (p->map_w != p->w || p->map_h != p->h) {
       if (recreate_pop_buffer(c, p) < 0)
@@ -1943,7 +2076,7 @@ void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels, int sw,
       *out_w = p->w;
     if (out_h)
       *out_h = p->h;
-    x_flush_pixels(c, p->x_win, p->x_gc, pixels, p->w, p->h);
+    x_flush_pixels(c, p->x_win, p->x_gc, &p->img, pixels, p->w, p->h);
   }
 }
 
@@ -2023,6 +2156,11 @@ static void drain_x11_events(lbar_ctx *c) {
   while (XPending(c->x_dpy) > 0) {
     XEvent e;
     XNextEvent(c->x_dpy, &e);
+    if (c->x_shm_ok && c->shm_ev_base >= 0 &&
+        e.type == c->shm_ev_base + ShmCompletion) {
+      x_shm_completed(c, ((XShmCompletionEvent *)&e)->shmseg);
+      continue;
+    }
     if (e.type == Expose) {
       int pi = -1;
       for (int i = 0; i < c->n_popups; i++) {
@@ -2043,8 +2181,21 @@ static void drain_x11_events(lbar_ctx *c) {
           break;
         }
       }
+      int target = pi >= 0 ? 1 : 0;
+      /* coalesce motion storms (drag): a queued motion for the same window
+       * is overwritten so Lua redraws at most once per pump cycle */
+      if (c->ev_head != c->ev_tail) {
+        lbar_ev_t *last = &c->events[(c->ev_tail - 1 + LBAR_EV_MAX) % LBAR_EV_MAX];
+        if (last->type == 1 && last->target == target && last->a == pi) {
+          last->x = e.xmotion.x;
+          last->y = e.xmotion.y;
+          last->root_x = e.xmotion.x_root;
+          last->root_y = e.xmotion.y_root;
+          continue;
+        }
+      }
       ev_push(c, 1, e.xmotion.x, e.xmotion.y, e.xmotion.x_root,
-              e.xmotion.y_root, 0, pi >= 0 ? 1 : 0, 0, 0, pi);
+              e.xmotion.y_root, 0, target, 0, 0, pi);
     } else if (e.type == ButtonPress) {
       int pi = -1;
       for (int i = 0; i < c->n_popups; i++) {
@@ -2207,11 +2358,13 @@ void lbar_close(lbar_ctx *c) {
   } else {
     for (int i = 0; i < c->n_popups; i++) {
       lbar_popup_t *p = &c->popups[i];
+      x_img_free(c, &p->img);
       if (p->x_win)
         XDestroyWindow(c->x_dpy, p->x_win);
       if (p->x_gc)
         XFreeGC(c->x_dpy, p->x_gc);
     }
+    x_img_free(c, &c->bar_img);
     if (c->x_bar_win)
       XDestroyWindow(c->x_dpy, c->x_bar_win);
     if (c->x_bar_gc)

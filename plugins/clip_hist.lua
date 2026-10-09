@@ -24,7 +24,7 @@ local function truncate_to_px(ctx, text, max_w)
 	if max_w <= 0 then
 		return ""
 	end
-	if select(1, ctx.get_text_size(text)) <= max_w then
+	if ctx.text_width(text) <= max_w then
 		return text
 	end
 
@@ -53,7 +53,7 @@ local function truncate_to_px(ctx, text, max_w)
 			mid = 1
 		end
 		local sub = text:sub(1, mid) .. "…"
-		if select(1, ctx.get_text_size(sub)) <= max_w then
+		if ctx.text_width(sub) <= max_w then
 			best = mid
 			lo = mid + 1
 		else
@@ -75,8 +75,8 @@ local function build_model(ctx, user_size)
 		PAD = PAD,
 		W = 560,
 		APPBAR = lh + 26,
-		IN_H = lh + 20,
-		SEARCH_H = 14 + (lh + 20) + 12,
+		IN_H = lh + 24,
+		SEARCH_H = 14 + (lh + 24) + 12,
 		ROW_H = row_h(lh),
 		ROW_GAP = ROW_GAP,
 		FOOTER_H = lh + 30,
@@ -113,7 +113,7 @@ local function do_draw(p)
 	local W, H = m.W, m.H
 	local n = #M.filtered
 	local tw = function(str)
-		return select(1, ctx.get_text_size(str))
+		return ctx.text_width(str)
 	end
 
 	local CR = W - PAD - SB_W -- card right edge

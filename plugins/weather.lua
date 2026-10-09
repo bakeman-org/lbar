@@ -231,13 +231,13 @@ local function do_draw(p)
 			or string.format("%d°C", math.floor(wd.temp))
 		p:text(PAD + 16, m.hero_y + 14, temp, T.on_surface)
 		local icon = I.t(icon_for(wd.desc))
-		local iw = select(1, ctx.get_text_size(icon))
+		local iw = ctx.text_width(icon)
 		p:text(W - PAD - 16 - iw, m.hero_y + 14, icon, T.primary_hi)
 		local y2 = m.hero_y + 14 + lh + 8
 		p:text(PAD + 16, y2, wd.desc or "--", T.on_var)
 		local loc_str = fmt_location(wd)
-		local lw = select(1, ctx.get_text_size(loc_str))
-		local dw = select(1, ctx.get_text_size(wd.desc or "--"))
+		local lw = ctx.text_width(loc_str)
+		local dw = ctx.text_width(wd.desc or "--")
 		if lw <= card_w - 32 - dw - 16 then
 			p:text(W - PAD - 16 - lw, y2, loc_str, T.hint)
 		end
@@ -261,7 +261,7 @@ local function do_draw(p)
 		p:rrect(PAD, y, card_w, m.ROW_H, CARD_R, T.surface)
 		local ty = y + math.floor((m.ROW_H - lh) / 2)
 		p:text(PAD + 16, ty, c[1], T.on_var)
-		local vw = select(1, ctx.get_text_size(c[2]))
+		local vw = ctx.text_width(c[2])
 		p:text(W - PAD - 16 - vw, ty, c[2], T.hint)
 	end
 
@@ -273,7 +273,7 @@ local function do_draw(p)
 	local status = M.data and fmt_ago(M.last_update_t) or M.error or I.t("waiting data")
 	p:text(PAD, mid_y, status, T.hint)
 	local src = "wttr.in"
-	local sw = select(1, ctx.get_text_size(src))
+	local sw = ctx.text_width(src)
 	p:text(W - PAD - sw, mid_y, src, T.hint)
 
 	-- header painted LAST: its opaque band clips the content above it
@@ -291,7 +291,7 @@ function M.bar_label()
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size(M.bar_label())) + 20
+	return ctx.text_width(M.bar_label()) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)

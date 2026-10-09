@@ -146,10 +146,27 @@ local ctx = {
 ctx.scr_w = L.lbar_screen_w(Lctx)
 ctx.scr_h = L.lbar_screen_h(Lctx)
 
+-- text width cache: get_text_size is a FreeType FFI call that's repeated
+-- for the same strings every draw frame (row labels, button text, …).
+-- Cache the width keyed by string; clear on font reload.
+local _tw_cache = {}
+ctx._tw_cache = _tw_cache
 function ctx.get_text_size(s)
 	local w, h = ffi.new("int[1]"), ffi.new("int[1]")
 	L.xft_text_extent(ft_ctx, s, w, h)
 	return w[0], h[0]
+end
+-- cached width-only lookup (most callers only need w); falls back to FFI
+function ctx.text_width(s)
+	local v = _tw_cache[s]
+	if v then
+		return v
+	end
+	local w = ffi.new("int[1]")
+	L.xft_text_extent(ft_ctx, s, w, ffi.new("int[1]"))
+	v = w[0]
+	_tw_cache[s] = v
+	return v
 end
 function ctx.get_line_height()
 	return L.xft_primary_line_height(ft_ctx)
@@ -405,6 +422,11 @@ local function reload_all()
 	I18n.init(ctx)
 	theme_dark = (config.theme_mode or "dark") ~= "light"
 
+	-- font or i18n change invalidates every cached text width
+	for k in pairs(ctx._tw_cache or {}) do
+		ctx._tw_cache[k] = nil
+	end
+
 	-- toasts are emitted after the backend reopen: a toast panel created
 	-- before lbar_close would hold a popup id from the freed ctx
 	local font_ok, font_err
@@ -623,6 +645,7 @@ local TICK_MS = 200
 local WATCH_MS = 800
 local watch_accum = 0
 local last_tick = now_ms()
+local last_loop = now_ms()
 local ev = ffi.new("lbar_event_t")
 
 local function panel_by_popup(id)
@@ -840,15 +863,23 @@ while true do
 		end
 	end
 
-	for _, p in pairs(panels) do
-		p:tick(16)
-	end
-	ctx.toast:tick(16)
-
+	-- real loop dt: fixed 16ms steps made animations and toast deadlines
+	-- drift whenever a cycle ran long (slow draws, reloads)
 	local now = now_ms()
-	local dt = now - last_tick
-	if dt >= TICK_MS then
-		bar:tick(dt)
+	local dt = now - last_loop
+	if dt < 1 then
+		dt = 1
+	end
+	last_loop = now
+	ctx._now_ms = now
+	for _, p in pairs(panels) do
+		p:tick(dt)
+	end
+	ctx.toast:tick(dt)
+
+	local bdt = now - last_tick
+	if bdt >= TICK_MS then
+		bar:tick(bdt)
 		last_tick = now
 
 		if auto_reload then

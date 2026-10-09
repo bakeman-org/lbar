@@ -200,7 +200,7 @@ local function build_model(ctx, user_size)
 	m.ROW_H = lh + 16 -- calendar cell pitch
 	m.SCHED_GAP = lh + 16 -- schedule row pitch
 	m.CHIP_H = lh + 14 -- picker chip height
-	m.BASE_IN = lh + 8 -- base description input height
+	m.BASE_IN = lh + 24 -- base description input height
 	m.DIAL_RO = math.floor(lh * 4) -- outer ring label radius
 	m.DIAL_RI = math.floor(m.DIAL_RO * 0.64) -- inner ring label radius
 	m.DIAL_D = m.DIAL_RO * 2 + 28 -- dial hit diameter (>= 2.6 * lh)
@@ -367,7 +367,7 @@ local function draw_line(p, x0, y0, x1, y1, c)
 end
 
 local function draw_dial_label(p, ctx, lh, x, y, s, sel, T)
-	local tw = select(1, ctx.get_text_size(s))
+	local tw = ctx.text_width(s)
 	local tx = x - math.floor(tw / 2)
 	local ty = y - math.floor(lh / 2)
 	if sel then
@@ -416,8 +416,8 @@ local function draw_time_view(p, m)
 	-- HH:MM readout: active phase filled; click a pill to switch phase
 	local ry = m.HEAD_H + 14
 	local pill_h = lh + 16
-	local pw = select(1, ctx.get_text_size("88")) + 26
-	local colon_w = select(1, ctx.get_text_size(":"))
+	local pw = ctx.text_width("88") + 26
+	local colon_w = ctx.text_width(":")
 	local x0 = math.floor((W_ - (pw * 2 + colon_w + 16)) / 2)
 	if ui and ui:id_button("tp_h", x0, ry, pw, pill_h,
 		string.format("%02d", pick_h),
@@ -520,7 +520,7 @@ local function draw_years_view(p, m)
 	local y = m.HEAD_H + 14
 	-- year line (active in this view; click returns to the calendar)
 	local ys = tostring(view_year)
-	local yw = select(1, ctx.get_text_size(ys))
+	local yw = ctx.text_width(ys)
 	p:text(PAD, y, ys, T.primary)
 	M.year_rect = { x = PAD - 4, y = y - 3, w = yw + 12, h = lh + 6 }
 	y = y + lh + 4
@@ -540,7 +540,7 @@ local function draw_years_view(p, m)
 		local gx = PAD + (i % 5) * gw
 		local gy = y + math.floor(i / 5) * gh
 		local s = tostring(yr)
-		local tw = select(1, ctx.get_text_size(s))
+		local tw = ctx.text_width(s)
 		if yr == view_year then
 			p:rrect(gx + 6, gy + 3, gw - 12, gh - 6, math.floor((gh - 6) / 2), T.surface_hi)
 		end
@@ -579,9 +579,9 @@ local function draw_panel(p)
 	local date_str = I.t(os.date("%a")) .. ", " .. I.t(os.date("%b")) .. " " .. os.date("%d")
 	p:draw_header(I.t("Clock"), Util.keybind_hint(ctx, "toggle_clock"), PAD)
 	local ty = m.HEAD_H + 10
-	local tw = select(1, ctx.get_text_size(time_str))
+	local tw = ctx.text_width(time_str)
 	p:text(math.floor((W_ - tw) / 2), ty, time_str, T.primary)
-	local dw = select(1, ctx.get_text_size(date_str))
+	local dw = ctx.text_width(date_str)
 	p:text(math.floor((W_ - dw) / 2), ty + lh + 6, date_str, T.on_var)
 
 	local y = ty + lh + 6 + lh + 14
@@ -590,7 +590,7 @@ local function draw_panel(p)
 
 	-- picker header: small year (click → years view) + viewed month
 	local ys = tostring(view_year)
-	local yw = select(1, ctx.get_text_size(ys))
+	local yw = ctx.text_width(ys)
 	p:text(PAD, y, ys, T.hint)
 	M.year_rect = { x = PAD - 4, y = y - 3, w = yw + 12, h = lh + 6 }
 	p:text(PAD + yw + 10, y,
@@ -626,7 +626,7 @@ local function draw_panel(p)
 	for i, c in ipairs(cols) do
 		local label = I.t(c)
 		local cx = PAD + (i - 1) * COL_W
-		local cw = select(1, ctx.get_text_size(label))
+		local cw = ctx.text_width(label)
 		p:text(cx + math.floor((COL_W - cw) / 2), y, label, T.hint)
 	end
 	y = y + lh + 10
@@ -644,7 +644,7 @@ local function draw_panel(p)
 				local cx = PAD + col * COL_W
 				local cy = y + row * row_h
 				local day_str = tostring(day)
-				local dw_ = select(1, ctx.get_text_size(day_str))
+				local dw_ = ctx.text_width(day_str)
 				local tx = cx + math.floor((COL_W - dw_) / 2)
 				local is_today = day == today.day and view_month == today.month
 					and view_year == today.year
@@ -697,8 +697,8 @@ local function draw_panel(p)
 	p:text(PAD, y, I.t("schedule"), T.hint)
 	-- discoverability hint (hidden when it would collide with the add button)
 	local edit_hint = I.t("click a schedule to edit")
-	local hx = PAD + select(1, ctx.get_text_size(I.t("schedule"))) + 14
-	local hw = select(1, ctx.get_text_size(edit_hint))
+	local hx = PAD + ctx.text_width(I.t("schedule")) + 14
+	local hw = ctx.text_width(edit_hint)
 	if hx + hw <= W_ - PAD - add_w - 12 then
 		p:text(hx, y, edit_hint, T.hint)
 	end
@@ -727,7 +727,7 @@ local function draw_panel(p)
 		local vcol = done and T.hint or T.on_surface
 		p:text(PAD, y, when, tcol)
 		-- text starts right after the measured time label (no fixed offset)
-		local when_w = select(1, ctx.get_text_size(when))
+		local when_w = ctx.text_width(when)
 		local tx = PAD + when_w + 12
 		local avail = W_ - PAD - 56 - tx
 		p:text(tx, y, Util.utf8_truncate(e.txt, math.max(4, math.floor(avail / 9))), vcol)
@@ -750,7 +750,7 @@ local function draw_panel(p)
 		p:text(PAD, y, I.t("no schedule"), T.hint)
 	elseif #entries > sched_max then
 		local more = "+" .. (#entries - sched_max)
-		p:text(W_ - PAD - select(1, ctx.get_text_size(more)), y, more, T.hint)
+		p:text(W_ - PAD - ctx.text_width(more), y, more, T.hint)
 	end
 
 	-- footer: date chip + time chip + description input while adding/editing
@@ -761,12 +761,12 @@ local function draw_panel(p)
 		local chip_h = m.CHIP_H
 		-- picked date chip (display)
 		local ds = sel_str()
-		local dwid = select(1, ctx.get_text_size(ds)) + 24
+		local dwid = ctx.text_width(ds) + 24
 		p:rrect(PAD, ay, dwid, chip_h, math.floor(chip_h / 2), T.surface_hi)
 		p:text(PAD + 12, ay + 7, ds, T.primary)
 		-- time chip opens the Material dial
 		local ts = string.format("%02d:%02d", pick_h, pick_mi)
-		local twid = select(1, ctx.get_text_size(ts)) + 24
+		local twid = ctx.text_width(ts) + 24
 		if ui and ui:id_button("pick_time", PAD + dwid + 8, ay, twid, chip_h, ts, { tonal = true }) then
 			M.tp_back_h, M.tp_back_mi = pick_h, pick_mi
 			M.tp_phase = "h"
@@ -779,11 +779,11 @@ local function draw_panel(p)
 		p.input:set_rect(PAD, by, iw, base_in)
 		p.input:draw(p)
 		if ui then
-			if ui:id_button("add_cancel", PAD + iw + 8, by + 1, 44, lh + 8,
+			if ui:id_button("add_cancel", PAD + iw + 8, by + 1, 44, base_in - 2,
 				"esc", { tonal = true }) then
 				stop_add(p)
 			end
-			if ui:id_button("add_ok", PAD + iw + 58, by + 1, 56, lh + 8,
+			if ui:id_button("add_ok", PAD + iw + 58, by + 1, 56, base_in - 2,
 				M.edit_idx and I.t("update") or I.t("ok"), { filled = true }) then
 				submit_add(p)
 			end

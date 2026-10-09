@@ -96,7 +96,7 @@ local function do_draw(p)
 	local y = m.HEADER_H + 20
 	for _, r in ipairs(rows) do
 		p:text(PAD, y, r[1], T.hint)
-		local vw = select(1, ctx.get_text_size(r[2]))
+		local vw = ctx.text_width(r[2])
 		p:text(W - PAD - vw, y, r[2], T.on_surface)
 		y = y + m.ROW_H
 	end

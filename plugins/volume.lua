@@ -102,7 +102,7 @@ local function do_draw(p)
 	local y = m.HEADER_H + 16
 	p:rrect(PAD, y, card_w, m.HERO_H, m.CARD_R, T.surface)
 	local big = string.format("%d%%", vol)
-	local big_w = select(1, ctx.get_text_size(big))
+	local big_w = ctx.text_width(big)
 	local big_col = mute and T.crit or T.primary
 	p:text(math.floor((W - big_w) / 2), y + math.floor((m.HERO_H - lh) / 2), big, big_col)
 	y = y + m.HERO_H + m.ROW_GAP
@@ -210,7 +210,7 @@ function M.width(ctx)
 	if not HAVE_PACTL or not have_state then
 		return 0
 	end
-	return select(1, ctx.get_text_size(str())) + 20
+	return ctx.text_width(str()) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)

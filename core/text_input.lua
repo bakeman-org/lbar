@@ -169,7 +169,7 @@ function TI:_rebuild_cache()
 			ni = n + 1
 		end
 		local ch = s:sub(i, ni - 1)
-		local w = select(1, self.ctx.get_text_size(ch))
+		local w = self.ctx.text_width(ch)
 		char_w[i] = w
 		acc = acc + w
 		prefix_w[ni] = acc
@@ -1280,7 +1280,7 @@ function TI:_draw_toolbar(s, theme)
 	local btns = {}
 	local total = pad + aw + 6 + aw + pad
 	for _, it in ipairs(items) do
-		local w = select(1, self.ctx.get_text_size(it[1])) + 20
+		local w = self.ctx.text_width(it[1]) + 20
 		btns[#btns + 1] = { label = it[1], act = it[2], w = w }
 		total = total + w
 	end
@@ -1414,7 +1414,7 @@ function TI:_draw_single(s, theme)
 		local col = theme.hint or theme.on_var or theme.outline
 		if px >= self.text_x - 1 and px <= self.text_x + self.text_w + 1 then
 			s:text(px, text_y, self.preedit, col)
-			local pw = select(1, self.ctx.get_text_size(self.preedit))
+			local pw = self.ctx.text_width(self.preedit)
 			s:rect(px, text_y + lh + 1, pw, 1, col)
 		end
 	end
@@ -1519,7 +1519,7 @@ function TI:_draw_wrap(s, theme)
 			local w = 0
 			while j <= #pe do
 				local ni = utf8_next(pe, j)
-				local cw = select(1, self.ctx.get_text_size(pe:sub(j, ni - 1)))
+				local cw = self.ctx.text_width(pe:sub(j, ni - 1))
 				if cur_x + w + cw > self.text_w and j > i then
 					break
 				end

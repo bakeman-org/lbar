@@ -305,7 +305,7 @@ local function compute_layout(lh, ncores_display, scr_h, user_size)
 	L.PAD = PAD
 	L.W = 720
 	L.HEADER_H = lh + 26
-	L.SEARCH_ROW = lh + 8 -- search input row under the header
+	L.SEARCH_ROW = lh + 24 -- search input row under the header
 	L.FOOTER_H = lh + 30
 	L.ROW_H = row_h(lh)
 	L.CHIP_H = chip_h(lh)
@@ -399,7 +399,7 @@ local function do_draw(p)
 	local pct = M.cur_cpu_agg or 0
 	p:text(content_x, ty, I.t("CPU"), T.on_var)
 	local pct_str = string.format("%5.1f%%", pct)
-	local pw = select(1, ctx.get_text_size(pct_str))
+	local pw = ctx.text_width(pct_str)
 	p:text(CR - 16 - pw, ty, pct_str, T.hint)
 	local bar_w = CR - 16 - pw - 12 - bar_x
 	if bar_w > 40 then
@@ -433,7 +433,7 @@ local function do_draw(p)
 			local cty = cyp + 4
 			p:text(cxp + 12, cty, string.format("c%d", i - 1), T.on_var)
 			local cs = string.format("%5.1f%%", v)
-			local cw = select(1, ctx.get_text_size(cs))
+			local cw = ctx.text_width(cs)
 			p:text(cxp + chip_w - 12 - cw, cty, cs, T.hint)
 			ui:progress(cxp + 12, cyp + m.CHIP_H - 12, chip_w - 24, 6, v, load_color(T, v))
 		end
@@ -453,7 +453,7 @@ local function do_draw(p)
 	ty = y + math.floor((m.ROW_H - lh) / 2)
 	p:text(content_x, ty, I.t("mem"), T.on_var)
 	local mem_str = string.format("%s / %s %3.0f%%", fmt_bytes_kb(mem_used), fmt_bytes_kb(mem_total), mem_pct)
-	local mw = select(1, ctx.get_text_size(mem_str))
+	local mw = ctx.text_width(mem_str)
 	p:text(CR - 16 - mw, ty, mem_str, T.hint)
 	bar_w = CR - 16 - mw - 12 - bar_x
 	if bar_w > 40 then
@@ -471,7 +471,7 @@ local function do_draw(p)
 	local swp_str = swp_total > 0
 			and string.format("%s / %s %3.0f%%", fmt_bytes_kb(swp_used), fmt_bytes_kb(swp_total), swp_pct)
 		or "--"
-	local sw = select(1, ctx.get_text_size(swp_str))
+	local sw = ctx.text_width(swp_str)
 	p:text(CR - 16 - sw, ty, swp_str, T.hint)
 	bar_w = CR - 16 - sw - 12 - bar_x
 	if bar_w > 40 then
@@ -487,14 +487,14 @@ local function do_draw(p)
 	ty = y + math.floor((m.ROW_H - lh) / 2)
 	p:text(content_x, ty, I.t("load"), T.on_var)
 	local load_str = M.cur_load or "--"
-	local lw = select(1, ctx.get_text_size(load_str))
+	local lw = ctx.text_width(load_str)
 	p:text(CR - 16 - lw, ty, load_str, T.hint)
 	y = y + m.ROW_H + ROW_GAP
 	p:rrect(card_x, y, card_w, m.ROW_H, CARD_R, T.surface)
 	ty = y + math.floor((m.ROW_H - lh) / 2)
 	p:text(content_x, ty, I.t("uptime"), T.on_var)
 	local up_str = I.t("up %s", M.cur_up or "--")
-	local uw = select(1, ctx.get_text_size(up_str))
+	local uw = ctx.text_width(up_str)
 	p:text(CR - 16 - uw, ty, up_str, T.hint)
 	y = y + m.ROW_H
 
@@ -505,9 +505,9 @@ local function do_draw(p)
 	local cpu_right = mem_right - MEM_W - 16
 	p:text(card_x + 6, y + m.TITLE_H - lh - 2, I.t("processes"), T.hint)
 	local cpu_hdr = I.t("CPU%")
-	p:text(cpu_right - select(1, ctx.get_text_size(cpu_hdr)), y + m.TITLE_H - lh - 2, cpu_hdr, T.hint)
+	p:text(cpu_right - ctx.text_width(cpu_hdr), y + m.TITLE_H - lh - 2, cpu_hdr, T.hint)
 	local mem_hdr = I.t("MEM%")
-	p:text(mem_right - select(1, ctx.get_text_size(mem_hdr)), y + m.TITLE_H - lh - 2, mem_hdr, T.hint)
+	p:text(mem_right - ctx.text_width(mem_hdr), y + m.TITLE_H - lh - 2, mem_hdr, T.hint)
 	y = y + m.TITLE_H
 
 	local pid_max = 0
@@ -516,7 +516,7 @@ local function do_draw(p)
 		if idx > #M.filtered then
 			break
 		end
-		local pwd = select(1, ctx.get_text_size(tostring(M.filtered[idx].pid)))
+		local pwd = ctx.text_width(tostring(M.filtered[idx].pid))
 		if pwd > pid_max then
 			pid_max = pwd
 		end
@@ -545,10 +545,10 @@ local function do_draw(p)
 		local ry_ty = ry + math.floor((m.ROW_H - lh) / 2)
 		p:text(pid_x, ry_ty, tostring(proc.pid), T.hint)
 		local name = proc.name
-		if select(1, ctx.get_text_size(name)) > name_max_w then
+		if ctx.text_width(name) > name_max_w then
 			local cut = #name
 			while cut > 0 do
-				if select(1, ctx.get_text_size(name:sub(1, cut) .. "…")) <= name_max_w then
+				if ctx.text_width(name:sub(1, cut) .. "…") <= name_max_w then
 					name = name:sub(1, cut) .. "…"
 					break
 				end
@@ -558,10 +558,10 @@ local function do_draw(p)
 		p:text(name_x, ry_ty, name, selected and T.on_surface or T.on_var)
 		local cpu_col = proc.cpu >= 80 and T.crit or proc.cpu >= 30 and T.warn or T.good
 		local cstr = string.format("%5.1f", proc.cpu)
-		p:text(cpu_right - select(1, ctx.get_text_size(cstr)), ry_ty, cstr, cpu_col)
+		p:text(cpu_right - ctx.text_width(cstr), ry_ty, cstr, cpu_col)
 		local mp = proc.mem / (mem_total * 1024) * 100
 		local mstr = string.format("%5.1f%%", mp)
-		p:text(mem_right - select(1, ctx.get_text_size(mstr)), ry_ty, mstr, T.hint)
+		p:text(mem_right - ctx.text_width(mstr), ry_ty, mstr, T.hint)
 	end
 	y = y + m.rect_list.h
 
@@ -590,7 +590,7 @@ local function do_draw(p)
 		end
 		local q = I.t("kill %d %s?", M.pending.pid, nm)
 		local q_max = W - PAD * 2 - 2 * bw - 12 - 24
-		while #q > 4 and select(1, ctx.get_text_size(q)) > q_max do
+		while #q > 4 and ctx.text_width(q) > q_max do
 			q = q:sub(1, -2)
 		end
 		p:text(PAD, mid_y, q, T.crit)
@@ -628,7 +628,7 @@ local function do_draw(p)
 	-- grows the row downward (Panel:fit adds the extra height) instead of
 	-- overlapping the header band or the body cards
 	local hh = p:draw_header(I.t("System Monitor"), Util.keybind_hint(ctx, "toggle_sysmon"), PAD)
-	p.input:set_rect(PAD, hh + 6, W - PAD * 2, lh + 4)
+	p.input:set_rect(PAD, hh + 6, W - PAD * 2, lh + 24)
 	p.input:draw(p)
 end
 

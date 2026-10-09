@@ -1,77 +1,75 @@
-# lbar config.lua spec
+# lbar config.lua 配置说明
 
-Config lives at `config.lua` next to `lbar.lua` (or pass a path as argv[1]).
-It is a single Lua table: `return { ... }`. Values are read at startup and on
-hot reload (every file save triggers an 800ms watcher reload; fonts re-load
-only if `font_path`/`font_size`/`fallback_font_paths` changed).
+配置文件位于 `lbar.lua` 同目录的 `config.lua`（也可通过 argv[1] 传入其他路径）。
+它就是单个 Lua 表：`return { ... }`。所有值在启动时读取，且支持热重载（每次保存
+触发 800ms watcher 自动重载；仅当 `font_path`/`font_size`/`fallback_font_paths`
+变化时才重新加载字体）。
 
-The settings panel (`ctrl+alt+j`) edits almost every key below in place.
+设置面板（`ctrl+alt+j`）可以在界面上直接编辑下表的几乎所有键并写回本文件。
 
-## Top-level keys
+## 顶层键
 
-| key | type | default | description |
+| 键 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `position` | `'top'` \| `'bottom'` | `'top'` | bar screen edge; panels anchored to bar open below/above accordingly |
-| `height` | `'auto'` \| number | `'auto'` | bar height px; `'auto'` = line height + 18 |
-| `padding` | number | `16` | bar inner horizontal padding |
-| `gap` | number | `10` | gap between bar items (auto-compressed if items overflow) |
-| `bar_margin` | number | `0` | distance from screen edge |
-| `theme` | string | `'md3_dark'` | dark-mode palette name (list below) |
-| `theme_light` | string | `'md3_light'` | light-mode palette name |
-| `theme_mode` | `'dark'` \| `'light'` | `'dark'` | current mode; persisted by `ctrl+alt+k` and the settings panel |
-| `corner` | `'round'` \| `'square'` | `'round'` | global corner style; `'square'` flattens buttons, pills, cards, the bar and popup windows to sharp corners. Switchable from the settings panel (Options → style → corner style) |
-| `lang` | `'auto'` \| `'en'` \| `'zh'` | `'auto'` | UI language; `'auto'` detects from `$LANG` (`zh*` → Chinese). Switchable live from the settings panel (Options → language). Every user-visible string is translated — panel titles, labels, buttons, statuses, toasts and bar item labels (bar labels stay compact in zh) |
-| `font_path` | string | — | primary font (TTF/OTF), `~` allowed |
-| `font_size` | number | `14` | font size px |
-| `fallback_font_paths` | list of string | `{}` | fallback fonts (e.g. Noto Sans CJK for CJK glyphs) |
-| `audio_panel_dir` | string | — | music player scan directory |
-| `music_state_file` | string | `$XDG_STATE_HOME/lbar/music.conf` | music player volume + last track persistence |
-| `debug_shot_dir` | string | `~/Pictures/lbar` | debug screenshot output dir (`ctrl+alt+shift+x`) |
-| `plugins` | list of string | — | plugin load order = bar item order (left to right) |
-| `keybinds` | list of table | — | see "Keybinds" below |
-| `panels` | table | — | per-panel placement, see "Panels" |
-| `panel_opts` | table | — | per-panel behavior, see "Panel opts" |
+| `position` | `'top'` \| `'bottom'` | `'top'` | 栏在屏幕的哪一侧；锚定到栏的面板随之在栏下/上方打开 |
+| `height` | `'auto'` \| number | `'auto'` | 栏高度 px；`'auto'` = 行高 + 18 |
+| `padding` | number | `16` | 栏两端内边距 |
+| `gap` | number | `10` | bar item 间距（溢出时自动压缩） |
+| `bar_margin` | number | `0` | 栏与屏幕边缘的距离 |
+| `theme` | string | `'md3_dark'` | 深色模式配色名（见下） |
+| `theme_light` | string | `'md3_light'` | 浅色模式配色名 |
+| `theme_mode` | `'dark'` \| `'light'` | `'dark'` | 当前模式；`ctrl+alt+k` 和设置面板切换后写回 |
+| `corner` | `'round'` \| `'square'` | `'round'` | 全局圆角风格；`'square'` 会把按钮/胶囊/卡片/栏/面板窗口全部压成直角。可在设置面板切换（Options → style → corner style） |
+| `lang` | `'auto'` \| `'en'` \| `'zh'` | `'auto'` | 界面语言；`'auto'` 根据 `$LANG` 检测（`zh*` → 中文）。可在设置面板实时切换。所有可见字符串（面板标题、标签、按钮、状态、toast、bar item 标签）均已翻译 |
+| `font_path` | string | — | 主字体（TTF/OTF），支持 `~` |
+| `font_size` | number | `14` | 字号 px |
+| `fallback_font_paths` | string 列表 | `{}` | 回退字体（如 CJK 字形用 Noto Sans CJK） |
+| `audio_panel_dir` | string | — | 音乐面板扫描目录 |
+| `music_state_file` | string | `$XDG_STATE_HOME/lbar/music.conf` | 音乐播放器音量 + 最后播放曲目持久化 |
+| `debug_shot_dir` | string | `~/Pictures/lbar` | 调试截图输出目录（`ctrl+alt+shift+x`） |
+| `plugins` | string 列表 | — | 插件加载顺序 = bar item 从左到右的排列顺序 |
+| `keybinds` | table 列表 | — | 见 "快捷键" 一节 |
+| `panels` | table | — | 每个面板的默认位置，见 "面板位置" |
+| `panel_opts` | table | — | 每个面板的行为开关，见 "面板行为" |
 
-## Themes
+## 主题
 
-14 builtin palettes — dark: `md3_dark`, `one_dark`, `gruvbox_dark`, `nord`,
-`catppuccin_mocha`, `tokyo_night`, `solarized_dark`; light: `md3_light`,
-`one_light`, `gruvbox_light`, `catppuccin_latte`, `tokyo_night_day`,
-`solarized_light`. `ctrl+alt+k` toggles `theme_mode` and rewrites
-`theme_mode` into config.lua.
+14 套内置配色 — 深色：`md3_dark`、`one_dark`、`gruvbox_dark`、`nord`、
+`catppuccin_mocha`、`tokyo_night`、`solarized_dark`；浅色：`md3_light`、
+`one_light`、`gruvbox_light`、`catppuccin_latte`、`tokyo_night_day`、
+`solarized_light`。`ctrl+alt+k` 切换 `theme_mode` 并把它写回 config.lua。
 
-## Plugins
+## 插件
 
-Valid names (each one is `plugins/<name>.lua`). Plugins with a bar item are
-marked; the rest are action/panel only.
+合法名称即 `plugins/<name>.lua`。带 bar item 的已标注；其余仅为动作/面板。
 
-| plugin | bar item | opens |
+| 插件 | bar item | 打开内容 |
 |---|---|---|
-| `logo` | tux logo | app info popup (theme switch, reload, quit) |
-| `workspace` | active workspace | click cycles workspace (hyprland/sway) |
-| `cpu` | `cpu` + usage | sysmon panel |
-| `mem` | `mem` + usage | sysmon panel |
-| `battery` | `BAT NN%` / `CHG` / `LOW` | battery + power menu (hidden if no battery) |
-| `volume` | `VOL N%` / `MUTE` | volume panel (hidden without pactl) |
-| `clock` | time | clock panel |
-| `keybinds_help` | `keys` | keybind catalog |
-| `launcher` | `apps` | app launcher |
-| `clip_hist` | `clip` | clipboard history |
-| `pomodoro` | timer state | pomodoro panel |
-| `music_player` | track state | music panel |
-| `weather` | temp | weather panel |
-| `sysinfo` | `info` | system info panel |
-| `sysmon` | `mon` | process monitor |
-| `color_picker` | `pick` | screen color picker |
-| `ui_demo` | `ui` | UI component showcase |
-| `settings` | `set` | settings panel |
-| `wallpaper` | `wall` | wallpaper picker |
-| `wifi` | ssid + signal | wifi panel |
-| `hide_all` | — (action only) | `hide_all_windows` |
-| `move_window` | — (action only) | window move keybinds |
-| `resize_window` | — (action only) | window resize keybinds |
+| `logo` | tux logo | 应用信息弹窗（主题切换、重载、退出） |
+| `workspace` | 当前工作区 | 点击切换工作区（hyprland/sway） |
+| `cpu` | `cpu` + 占用 | 系统监控面板 |
+| `mem` | `mem` + 占用 | 系统监控面板 |
+| `battery` | `BAT NN%` / `CHG` / `LOW` | 电池 + 电源菜单（无电池时隐藏） |
+| `volume` | `VOL N%` / `MUTE` | 音量面板（缺 pactl 时隐藏） |
+| `clock` | 时间 | 时钟面板 |
+| `keybinds_help` | `keys` | 快捷键目录 |
+| `launcher` | `apps` | 应用启动器 |
+| `clip_hist` | `clip` | 剪贴板历史 |
+| `pomodoro` | 计时状态 | 番茄钟面板 |
+| `music_player` | 曲目状态 | 音乐面板 |
+| `weather` | 温度 | 天气面板 |
+| `sysinfo` | `info` | 系统信息面板 |
+| `sysmon` | `mon` | 进程监控 |
+| `color_picker` | `pick` | 取色器 |
+| `ui_demo` | `ui` | UI 组件示例 |
+| `settings` | `set` | 设置面板 |
+| `wallpaper` | `wall` | 壁纸选择器 |
+| `wifi` | ssid + 信号 | wifi 面板 |
+| `hide_all` | —（纯动作） | `hide_all_windows` |
+| `move_window` | —（纯动作） | 窗口移动快捷键 |
+| `resize_window` | —（纯动作） | 窗口缩放快捷键 |
 
-## Keybinds
+## 快捷键
 
 ```lua
 keybinds = {
@@ -81,24 +79,24 @@ keybinds = {
 }
 ```
 
-- `mod` — `+`-joined: `ctrl`, `alt`, `shift`, `super`
-- `key` — keysym name (`a`, `s`, `F2`, `Left`, …)
-- `action` — any registered action. Every panel plugin auto-registers
-  `toggle_<panel>` (e.g. `toggle_sysmon`). Builtins: `quit`, `close_panels`,
-  `hot_reload`, `toggle_auto_reload`, `toggle_theme`, `hide_all_windows`,
-  `debug_dump_panel`, `debug_screenshot`, `toggle_debug_mode`,
-  `move_win_left/right/up/down`, `resize_win_wider/narrower/taller/shorter`,
-  `reset_active_window`.
-- `group` / `desc` — grouping and description shown in the keybind help panel.
+- `mod` — `+` 连接：`ctrl`、`alt`、`shift`、`super`
+- `key` — keysym 名（`a`、`s`、`F2`、`Left` 等）
+- `action` — 任意已注册动作。每个面板插件自动注册 `toggle_<panel>`（如
+  `toggle_sysmon`）。内置动作：`quit`、`close_panels`、`hot_reload`、
+  `toggle_auto_reload`、`toggle_theme`、`hide_all_windows`、
+  `debug_dump_panel`、`debug_screenshot`、`toggle_debug_mode`、
+  `move_win_left/right/up/down`、`resize_win_wider/narrower/taller/shorter`、
+  `reset_active_window`。
+- `group` / `desc` — 快捷键帮助面板里的分组与描述。
 
-Registration backends: Hyprland (`hyprctl eval` or `keyword bind` fallback),
-Sway (`swaymsg bindsym`), generic Wayland/X11 via `lbar-cli` IPC — niri users
-must paste the `binds { ... }` block printed in the lbar log into
-`~/.config/niri/config.kdl` themselves (lbar never writes external configs).
+注册后端：Hyprland（`hyprctl eval`，回退 `keyword bind`）、Sway
+（`swaymsg bindsym`）、通用 Wayland/X11 通过 `lbar-cli` IPC — niri 用户需
+把 lbar 日志打印的 `binds { ... }` 块手动粘贴到
+`~/.config/niri/config.kdl`（lbar 绝不写外部配置文件）。
 
-## Panels
+## 面板位置
 
-Per-panel placement and animation:
+每个面板的默认位置与动画：
 
 ```lua
 panels = {
@@ -107,54 +105,47 @@ panels = {
 ```
 
 - `pos` — `center` `top` `bottom` `left` `right` `top_left` `top_right`
-  `bottom_left` `bottom_right`, or `auto` (anchor below the bar item)
-- `anim` — `auto` (derived from pos/anchor) `slide_up` `slide_down`
+  `bottom_left` `bottom_right`，或 `auto`（锚定到对应 bar item）
+- `anim` — `auto`（按 pos/锚点推导）`slide_up` `slide_down`
   `slide_left` `slide_right` `none`
 
-An explicit `pos` (anything but `auto`) wins over bar anchoring: the panel
-opens at its configured entrance position on every open, including bar-item
-clicks. `auto` panels anchor to their bar item. A dragged position still
-wins over everything and is kept across reopens. When a free-positioned
-panel would land on top of a visible one, it cascades diagonally until
-clear (`Panel:avoid_overlap`).
+显式 `pos`（非 `auto`）优先于 bar 锚定：每次打开（包括点击 bar item）都
+落在配置的入场位置。`auto` 面板锚定到自己的 bar item。用户拖拽过的位置
+（user_pos）优先级最高，重开后保留。自由定位的面板若与可见面板重叠，
+会对角级联错开（`Panel:avoid_overlap`）。
 
-`panels.<name>.anim` beats `animation.style`, and both are read at startup.
+`panels.<name>.anim` 优先于 `animation.style`，两者均在启动时读取。
 
-### Window animations (PPT-style enter/exit)
+### 窗口动画（PPT 式入场/出场）
 
 ```lua
 animation = {
-  enabled     = true,   -- master switch (false = panels appear instantly)
-  style       = 'auto', -- or slide_up / slide_down / slide_left / slide_right / none
-  duration_ms = 150,    -- enter/exit travel time
-  distance    = 40,     -- slide distance in px
-  exit        = true,   -- animate the exit too
+  enabled     = true,   -- 总开关（false = 面板即时出现）
+  style       = 'auto', -- 或 slide_up / slide_down / slide_left / slide_right / none
+  duration_ms = 150,    -- 入场/出场时长
+  distance    = 40,     -- 滑动距离 px
+  exit        = true,   -- 出场是否播动画
 }
 ```
 
-With `style = 'auto'` each panel slides in from its anchor side (bar-anchored
-panels slide along the anchor direction, free-positioned panels along their
-`panels.<name>.pos` edge).
+`style = 'auto'` 时每个面板从自己的锚点侧滑入（bar 锚定面板沿锚点方向，
+自由面板沿 `panels.<name>.pos` 对应的边）。
 
-All panels are draggable: press and hold anywhere on the title bar (except
-the `×` close button) and move the mouse. Free-positioned panels remember
-the dragged position across reopens (`Panel:show`); bar-anchored panels
-re-anchor to their bar item on the next click.
+所有面板可拖拽：按住标题栏（`×` 关闭按钮除外）拖动即可。自由定位面板
+记住拖拽位置（`Panel:show`）；bar 锚定面板下次点击时重新锚定。
 
-### Auto-fit and reactive resizing
+### 自适应尺寸与响应式重排
 
-Panels auto-fit their content: a panel whose content size changes (schedule
-rows added/removed, wifi scan results, launcher filter counts, sysmon core
-count, probe rows landing) recomputes its natural size via `Panel:fit()` —
-live while visible, or on the next open. If you resized a panel manually
-(`ctrl+alt+shift` + arrows), your size is kept and content reflows instead.
+面板自动适配内容：内容尺寸变化（日程增删、wifi 扫描结果、启动器过滤
+数量、sysmon 核心数、探针行返回等）时经 `Panel:fit()` 重算自然尺寸 —
+可见时实时调整（live resize），否则下次打开时生效。若用户手动调整过大小
+（`ctrl+alt+shift` + 方向键），则保留用户尺寸，内容重排（reflow）。
 
-Every panel layout is reactive: the draw path re-derives from the live
-surface size each frame, so manual resizes reflow lists, columns and
-footers instead of overlapping them (reference pattern: `settings.lua`
-`do_draw`).
+每个面板布局都是响应式的：绘制路径每帧从实际 surface 尺寸推导，手动
+缩放时列表、列、页脚重排而不是互相覆盖（参考模式：`settings.lua`
+的 `do_draw`）。
 
-## Panel opts
+## 面板行为
 
 ```lua
 panel_opts = {
@@ -162,111 +153,103 @@ panel_opts = {
 }
 ```
 
-- `dismiss_outside` (default `true`) — when `false`, clicking outside the
-  panel does not close it and the click passes through to other apps. On
-  X11 this is a pointer grab; on Wayland a full-screen transparent catcher
-  surface (below the panels, bar strip excluded) delivers the outside press
-  and it is swallowed, mirroring the X11 behavior.
+- `dismiss_outside`（默认 `true`）— 设为 `false` 时点击面板外部不关闭，
+  点击穿透到其他应用。X11 上是 pointer grab；Wayland 上由全屏透明捕获面
+  （位于面板之下、挖掉栏区）接收外部按下并吞掉，行为与 X11 一致。
 
-## Plugin sections
+## 各插件配置节
 
-### cpu / mem (bar item styling)
+### cpu / mem（bar item 样式）
 
-Compact text-only labels, colored by load/usage.
+紧凑纯文本标签，按负载/占用着色。
 
-| key | default | description |
+| 键 | 默认值 | 说明 |
 |---|---|---|
-| `interval_ms` | cpu `1000`, mem `2000` | sample interval |
-| `color` | `true` | color by load/usage (good/warn/crit) |
+| `interval_ms` | cpu `1000`、mem `2000` | 采样间隔 |
+| `color` | `true` | 按负载/占用着色（good/warn/crit） |
 
 ### wifi
 
-| key | default | description |
+| 键 | 默认值 | 说明 |
 |---|---|---|
-| `interface` | `'auto'` | wifi iface name, or `'auto'` to detect |
-| `refresh_sec` | `8` | periodic rescan interval while panel is open |
+| `interface` | `'auto'` | 网卡名，`'auto'` 自动检测 |
+| `refresh_sec` | `8` | 面板打开时的周期重扫间隔 |
 
-Requires `nmcli` (NetworkManager).
+依赖 `nmcli`（NetworkManager）。
 
 ### wallpaper
 
-| key | default | description |
+| 键 | 默认值 | 说明 |
 |---|---|---|
-| `dir` | `~/Pictures`, `~/Pictures/wallpapers`, `~/wallpapers` | scan dir — string or list |
+| `dir` | `~/Pictures`、`~/Pictures/wallpapers`、`~/wallpapers` | 扫描目录 — 字符串或列表 |
 | `depth` | `3` | `find` maxdepth |
-| `set_cmd` | auto-detect | custom setter; `$f` = file path |
-| `max_items` | `300` | max scanned files |
+| `set_cmd` | 自动探测 | 自定义设置命令；`$f` = 图片路径 |
+| `max_items` | `300` | 最多扫描文件数 |
 
-Setter auto-detect order: `set_cmd` > running swww-daemon (auto-started if
-installed) > swaybg (`SWAYSOCK`) > hyprpaper (`HYPRLAND_*`) > wayland + swww
-> feh > nitrogen > xwallpaper > hyprctl. Covers i3/X11 via
-feh/nitrogen/xwallpaper.
+设置器自动探测顺序：`set_cmd` > 运行中的 swww-daemon（未运行则自动拉起）
+> swaybg（`SWAYSOCK`）> hyprpaper（`HYPRLAND_*`）> wayland + swww > feh >
+nitrogen > xwallpaper > hyprctl。i3/X11 经 feh/nitrogen/xwallpaper 覆盖。
 
-### battery (session menu)
+### battery（会话/电源菜单）
 
-The battery bar item opens one merged panel: battery status on top, then a
-Noctalia-style session card row.
+电池 bar item 打开一个合并面板：上方电池状态，下方会话卡片行（锁屏/注销/
+睡眠/重启/关机）。
 
-| key | default | description |
+| 键 | 默认值 | 说明 |
 |---|---|---|
-| `lock_cmd` | `'swaylock -f'` | lock command (runs immediately, no confirm) |
-| `logout_cmd` | auto-detect | override; auto: niri/hyprland/sway session exit |
-| `confirm` | `true` | confirm footer before logout/sleep/reboot/poweroff |
-| `items` | all | subset/order of `lock` `logout` `sleep` `reboot` `poweroff` |
+| `lock_cmd` | `'swaylock -f'` | 锁屏命令（立即执行，不确认） |
+| `logout_cmd` | 自动探测 | 覆盖注销命令；自动：niri/hyprland/sway 会话退出 |
+| `confirm` | `true` | 注销/睡眠/重启/关机前弹确认 |
+| `items` | 全部 | `lock` `logout` `sleep` `reboot` `poweroff` 的子集/顺序 |
 
 ### launcher
 
-| key | default | description |
+| 键 | 默认值 | 说明 |
 |---|---|---|
-| `use_dmenu_path` | `true` | merge `$PATH` executables into the entry list |
-| `entries` | `{}` | extra entries: `{ name = 'terminal', cmd = 'alacritty' }` |
+| `use_dmenu_path` | `true` | 把 `$PATH` 下可执行文件合并进条目列表 |
+| `entries` | `{}` | 额外条目：`{ name = 'terminal', cmd = 'alacritty' }` |
 
 ### pomodoro
 
-`work_min` (25), `break_min` (5).
+`work_min`（25）、`break_min`（5）。
 
 ### clip_hist
 
-`max_items` (30) — stored clipboard entries.
+`max_items`（30）— 保留的剪贴板条数。
 
 ### clock
 
-| key | default | description |
+| 键 | 默认值 | 说明 |
 |---|---|---|
-| `schedule_file` | `$XDG_STATE_HOME/lbar/schedule.conf` | schedule/alarms file, one entry per line |
+| `schedule_file` | `$XDG_STATE_HOME/lbar/schedule.conf` | 日程/闹钟文件，一行一条 |
 
-Entries are added with the built-in picker: click a calendar day to select
-the date (the selected day gets a highlight chip), press `add`, then set the
-time with the hour/minute steppers (`−`/`+`, minutes step by 5) and type a
-description. Submitting a past time for a future date is rejected; a past
-time on today rolls over to tomorrow. The panel auto-fits to the actual
-calendar row count, schedule rows and the add-strip, and reflows on manual
-resize.
+日程通过内置选择器添加：点击日历某天选中日期（选中日高亮 chip），按
+`add`，再用时/分步进器（`−`/`+`，分钟步进 5）设置时间并输入描述。过去
+时间 + 未来日期会被拒绝；今天已过时间自动滚动到明天。面板按实际日历行数、
+日程行数与添加条自适应尺寸，手动缩放时重排。
 
-The schedule file stays hand-editable — one entry per line,
-`YYYY-MM-DD HH:MM text`. Up to 6 entries are shown (sorted by time); days
-with pending schedules get a marker dot in the calendar. When a time comes
-due, a warning toast fires once per entry — entries that are already past
-when loaded never alert (e.g. after restart).
+日程文件保持可手编 — 一行一条，`YYYY-MM-DD HH:MM 文本`。最多显示 6 条
+（按时间排序）；有待办日程的日期在日历上显示圆点标记。到点时每条触发
+一次 warning toast — 加载时已过期的条目不再提醒（如重启后）。
 
 ### weather
 
-| key | default | description |
+| 键 | 默认值 | 说明 |
 |---|---|---|
-| `units` | `'c'` | `'c'` or `'f'` |
-| `refresh_sec` | `900` | fetch interval |
-| `manual_city` | auto-locate | city name string |
+| `units` | `'c'` | `'c'` 或 `'f'` |
+| `refresh_sec` | `900` | 拉取间隔 |
+| `manual_city` | 自动定位 | 城市名字符串 |
 
 ### move_window / resize_window
 
-`move_window.step` (30), `move_window.mode` (`'auto_float'`),
-`resize_window.step` (30).
+`move_window.step`（30）、`move_window.mode`（`'auto_float'`）、
+`resize_window.step`（30）。
 
-## Notes
+## 备注
 
-- Plugins write back to config.lua themselves (theme mode, settings panel
-  edits) with an in-place section-aware editor; the auto-reload watcher is
-  suppressed for one cycle after each write.
-- Bar items render in `plugins` list order; if the row overflows, gaps are
-  compressed first, then item widths squeezed proportionally — no item is
-  dropped.
+- 插件会自己写回 config.lua（主题模式、设置面板编辑），使用就地
+  section-aware 编辑器；每次写回后自动重载 watcher 抑制一个周期。
+- bar item 按 `plugins` 列表顺序渲染；行溢出时先压缩间距，再按比例压缩
+  item 宽度 — 不会丢弃任何 item。
+- X11 渲染使用 MIT-SHM 零拷贝上传（不可用时自动回退 XPutImage），鼠标
+  移动事件在 C 层合并，保证拖拽/多面板/动画流畅。

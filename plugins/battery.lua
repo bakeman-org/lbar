@@ -206,7 +206,7 @@ local function do_draw(p)
 	local str = string.format("%s %d%%", icon, cap)
 	p:rrect(PAD, m.status_y, card_w, m.STATUS_H, CARD_R, T.surface)
 	p:text(PAD + 16, m.status_y + 12, I.t("battery"), T.on_var)
-	local vw = select(1, ctx.get_text_size(str))
+	local vw = ctx.text_width(str)
 	p:text(W - PAD - 16 - vw, m.status_y + 12, str, col)
 	local pill_h = 8
 	local py = m.status_y + 12 + lh + 9
@@ -221,7 +221,7 @@ local function do_draw(p)
 	p:text(PAD + 6, m.group_y + 6, I.t("power"), T.hint)
 
 	-- session action card rows: label left, chevron right
-	local chw = select(1, ctx.get_text_size("›"))
+	local chw = ctx.text_width("›")
 	for i, key in ipairs(m.items) do
 		local y = m.item_y[i]
 		local hovered = ui:hover(PAD, y, card_w, m.ROW_H)
@@ -330,7 +330,7 @@ function M.width(ctx)
 	if not present then
 		return 0
 	end
-	return 8 + select(1, ctx.get_text_size(I.t("BAT") .. " 100%"))
+	return 8 + ctx.text_width(I.t("BAT") .. " 100%")
 end
 
 function M.tick(ctx, dt)

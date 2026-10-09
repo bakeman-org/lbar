@@ -714,7 +714,7 @@ end
 
 -- rough char budget for a pixel width (paths are mostly ASCII)
 local function fit_chars(ctx, avail)
-	local cw = select(1, ctx.get_text_size("n"))
+	local cw = ctx.text_width("n")
 	return math.max(2, math.floor(avail / math.max(4, cw)))
 end
 
@@ -761,9 +761,9 @@ local function do_draw(p)
 			elseif r.kind == "phdr" then
 				local hy = sy + r.h - lh - 2
 				p:text(PAD + 6, hy, I.t("panel"), T.hint)
-				local pw = select(1, ctx.get_text_size(I.t("position")))
+				local pw = ctx.text_width(I.t("position"))
 				p:text(pos_x + math.floor((pos_bw - pw) / 2), hy, I.t("position"), T.hint)
-				local dw = select(1, ctx.get_text_size(I.t("keep open")))
+				local dw = ctx.text_width(I.t("keep open"))
 				p:text(CR - 16 - dw, hy, I.t("keep open"), T.hint)
 			elseif r.kind == "mode" then
 				local bw = math.floor((card_w - 8) / 2)
@@ -840,12 +840,12 @@ local function do_draw(p)
 					-- str / num / list: value right-aligned, truncated to
 					-- the space between the label and the chevron
 					local vs = val_str(r)
-					local lbl_w = select(1, ctx.get_text_size(r.label))
-					local chw = select(1, ctx.get_text_size("›"))
+					local lbl_w = ctx.text_width(r.label)
+					local chw = ctx.text_width("›")
 					local val_right = CR - 16 - chw - 8
 					local avail = val_right - (card_x + 16 + lbl_w + 12)
 					vs = Util.utf8_truncate(vs, fit_chars(ctx, math.max(40, avail)))
-					local vw = select(1, ctx.get_text_size(vs))
+					local vw = ctx.text_width(vs)
 					p:text(val_right - vw, ty, vs, T.hint)
 					p:text(CR - 16 - chw, ty, "›", T.outline_var)
 					if ui:clicked(card_x, sy, card_w, r.h) then
@@ -913,11 +913,11 @@ local function do_draw(p)
 	local mid_y = fy + math.floor((m.FOOTER_H - lh) / 2)
 	if M.editing then
 		local lbl = M.editing.label or M.editing.key or ""
-		local bh = lh + 12
+		local bh = lh + 24
 		local bo = math.floor((m.FOOTER_H - bh) / 2)
 		p:text(PAD, mid_y, I.t("edit %s", lbl), T.hint)
 		local iw = W - PAD * 2 - 200
-		p.input:set_rect(PAD + 90, fy + bo + 2, iw, lh + 8)
+		p.input:set_rect(PAD + 90, fy + bo + 2, iw, bh - 4)
 		p.input:draw(p)
 		if ui:id_button("ed_cancel", PAD + 90 + iw + 10, fy + bo, 44, bh, "esc", { tonal = true }) then
 			cancel_edit(p)

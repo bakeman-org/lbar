@@ -315,8 +315,8 @@ local function do_draw(p)
 			p:text(PAD + 4, ry + 5, "✓", T.primary)
 		end
 		local max_w = inner_w - 40
-		if select(1, ctx.get_text_size(name)) > max_w then
-			while #name > 4 and select(1, ctx.get_text_size(name .. "…")) > max_w do
+		if ctx.text_width(name) > max_w then
+			while #name > 4 and ctx.text_width(name .. "…") > max_w do
 				name = name:sub(1, -2)
 			end
 			name = name .. "…"
@@ -428,7 +428,7 @@ function M.init(ctx)
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size(I.t("wall"))) + 20
+	return ctx.text_width(I.t("wall")) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)

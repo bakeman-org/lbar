@@ -1,85 +1,100 @@
+-- lbar 全局配置（热重载生效：ctrl+alt+r 手动重载；改动此文件后默认 800ms 内自动重载）
 return {
-    position = 'top',
-    height   = 'auto',
+    -- ── 栏（bar）──
+    position = 'top',      -- 栏位置：'top' | 'bottom'
+    height   = 'auto',     -- 'auto' 按字体行高自适应，或指定像素值
     -- height   = 1002,
-    padding  = 16,
-    gap      = 2,
-    bar_margin = 8,
+    padding  = 16,         -- 栏两端内边距（px）
+    gap      = 2,          -- bar item 之间的基础间距（px，溢出时自动压缩）
+    bar_margin = 8,        -- 栏与屏幕边缘的距离（px，>0 时栏为圆角胶囊）
 
-    -- builtin themes: md3_dark md3_light one_dark one_light gruvbox_dark gruvbox_light
-    -- nord catppuccin_mocha catppuccin_latte tokyo_night tokyo_night_day
-    -- solarized_dark solarized_light
-    theme       = 'nord',
-    theme_light = 'one_light',
-    theme_mode  = 'dark',
+    -- ── 主题 ──
+    -- 内置深色主题：md3_dark one_dark gruvbox_dark nord
+    -- catppuccin_mocha tokyo_night solarized_dark
+    -- 内置浅色主题：md3_light one_light gruvbox_light catppuccin_latte
+    -- tokyo_night_day solarized_light
+    theme       = 'nord',       -- 深色模式使用的主题
+    theme_light = 'one_light',  -- 浅色模式使用的主题
+    theme_mode  = 'dark',       -- 'dark' | 'light'（logo 图标/设置面板可切换并写回）
 
-    -- corner style: 'round' (rounded buttons/cards/windows) | 'square'
+    -- 圆角风格：'round' 圆角（按钮/卡片/窗口统一圆角）| 'square' 直角
     corner     = 'round',
 
-    -- UI language: 'auto' (detect from $LANG) | 'en' | 'zh'
+    -- 界面语言：'auto'（根据 $LANG 自动检测）| 'en' | 'zh'
     lang = 'zh',
 
+    -- ── 字体 ──
+    -- font_path 支持以 ~ 开头；fallback_font_paths 为回退字体（如中文 CJK）
     font_path = '/home/etcix/.local/share/fonts/FantasqueSansMNerdFontMono-Regular.ttf',
     font_size = 18,
     fallback_font_paths = {
         '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
     },
 
+    -- 音乐面板的初始浏览目录
     audio_panel_dir = '/home/etcix/Music',
 
-    -- music player state file (volume + last played track)
+    -- 音乐播放器状态文件（音量 + 最后播放曲目）
     music_state_file = os.getenv('HOME') .. '/.local/state/lbar/music.conf',
 
+    -- ── bar item 与插件 ──
+    -- 列表顺序即栏内从左到右的排列顺序；托盘类（wifi/音量/电池+电源菜单/时钟）
+    -- 放在右端，符合常见桌面Shell布局
     plugins = {
-        'logo', 'workspace', 'cpu', 'mem', 'battery', 'volume', 'clock',
-        'keybinds_help', 'launcher', 'clip_hist', 'pomodoro',
+        'logo', 'workspace', 'cpu', 'mem',
+        'launcher', 'keybinds_help', 'clip_hist', 'pomodoro',
         'music_player', 'weather', 'sysinfo', 'sysmon',
-        'color_picker', 'ui_demo', 'hide_all',
-        'settings', 'wallpaper', 'wifi',
+        'color_picker', 'ui_demo', 'hide_all', 'settings', 'wallpaper',
+        'wifi', 'volume', 'battery', 'clock',
     },
 
-    -- cpu/mem bar items are compact text labels colored by load
+    -- cpu/mem bar item 采样与配色
     cpu = {
-        interval_ms = 1000,
-        color = true,          -- color by load (good/warn/crit)
+        interval_ms = 1000,    -- 采样间隔（ms）
+        color = true,          -- 按负载着色（good/warn/crit）
     },
     mem = {
-        interval_ms = 2000,
+        interval_ms = 2000,    -- 采样间隔（ms）
         color = true,
     },
 
+    -- wifi（依赖 nmcli）
     wifi = {
-        interface = 'auto',    -- or e.g. 'wlan0'
-        refresh_sec = 8,
+        interface = 'auto',    -- 网卡名，'auto' 自动选择，或如 'wlan0'
+        refresh_sec = 8,       -- bar item 刷新间隔（秒）
     },
 
+    -- 壁纸选择器
     wallpaper = {
-        dir = '~/Pictures',    -- string or list of dirs
-        depth = 3,             -- find maxdepth
-        -- set_cmd = 'swww img "$f"',  -- force a custom setter ($f = file path)
+        dir = '~/Pictures',    -- 扫描目录：字符串或目录列表
+        depth = 3,             -- find maxdepth 扫描深度
+        -- set_cmd = 'swww img "$f"',  -- 强制自定义设置命令（$f 为图片路径占位符）；
+                                      -- 缺省时自动探测 swww/swaybg/hyprpaper/feh 等
     },
 
+    -- 电池 bar item + 电源菜单（锁屏/注销/睡眠/重启/关机）
     battery = {
-        lock_cmd = 'swaylock -f',
-        -- logout_cmd = 'niri msg action quit',  -- auto: niri/hyprland/sway
-        confirm = true,        -- ask before logout/sleep/reboot/poweroff
-        -- items = { 'lock', 'logout', 'sleep', 'reboot', 'poweroff' },
+        lock_cmd = 'swaylock -f',               -- 锁屏命令
+        -- logout_cmd = 'niri msg action quit', -- 注销命令，缺省按会话自动选择
+        confirm = true,        -- 注销/睡眠/重启/关机前弹确认对话框
+        -- items = { 'lock', 'logout', 'sleep', 'reboot', 'poweroff' }, -- 菜单项定制
     },
 
-    -- popup window animations (PPT-style enter/exit slides).
-    -- style: 'auto' (pick from the panel's anchor/position) | 'slide_up' |
-    --        'slide_down' | 'slide_left' | 'slide_right' | 'none'
-    -- per-panel override: config.panels.<name>.anim wins over animation.style
+    -- ── 面板动画（入场/出场滑动）──
+    -- style: 'auto'（按面板锚点/位置自动选择）| 'slide_up' | 'slide_down' |
+    --        'slide_left' | 'slide_right' | 'none'
+    -- 单个面板可覆盖：config.panels.<name>.anim 优先于 animation.style
     animation = {
         enabled     = true,
         style       = 'auto',
-        duration_ms = 150,   -- enter/exit travel time
-        distance    = 40,    -- slide distance in px
-        exit        = true,  -- animate the exit too
+        duration_ms = 150,     -- 入场/出场动画时长（ms）
+        distance    = 40,      -- 滑动距离（px）
+        exit        = true,    -- 出场是否播放动画
     },
 
-    -- per-panel scope: dismiss_outside = false keeps the panel open when
-    -- clicking outside it (outside clicks pass through to other apps)
+    -- ── 面板行为 ──
+    -- dismiss_outside = false：点击面板外部不关闭（点击会穿透到其他应用）；
+    -- true：点击外部即关闭面板
     panel_opts = {
         launcher = { dismiss_outside = true },
         sysmon = { dismiss_outside = true },
@@ -93,7 +108,9 @@ return {
         volume = { dismiss_outside = true },
     },
 
-    -- same keybinds as xpet
+    -- ── 全局快捷键（与 xpet 相同风格）──
+    -- mod: 修饰键组合；key: 键名；group: 设置面板里的分组；desc: 描述
+    -- Wayland 下通过 IPC + 合成器绑定实现（X11 为 XGrabKey）
     keybinds = {
         { mod = 'ctrl+alt', key = 'h', action = 'toggle_keybinds_help',
           group = 'panels', desc = 'keybind help (this panel)' },
@@ -165,10 +182,11 @@ return {
           group = 'system', desc = 'quit lbar' },
     },
 
+    -- ── 每个面板的默认位置与动画 ──
+    -- pos: center/top/bottom/left/right/top_left/top_right/bottom_left/
+    --      bottom_right，或 'auto' 锚定到对应 bar item 下方；
+    --      拖拽过的面板记住位置（user_pos 优先级最高），重叠面板自动级联错开
     panels = {
-        -- per-panel entrance position: center/top/bottom/left/right/
-        -- top_left/top_right/bottom_left/bottom_right, or 'auto' to anchor
-        -- below the bar item; overlapping panels cascade automatically
         clock          = { pos = 'top', anim = 'auto' },
         volume         = { pos = 'bottom_right', anim = 'auto' },
         launcher       = { pos = 'top', anim = 'slide_down' },
@@ -187,24 +205,26 @@ return {
         battery        = { pos = 'top_right', anim = 'auto' },
     },
 
+    -- 番茄钟：工作/休息时长（分钟）
     pomodoro = {
         work_min = 15,
         break_min = 5,
     },
 
+    -- 剪贴板历史：最大条数
     clip_hist = {
         max_items = 30,
     },
 
+    -- 时钟面板：日程/闹钟文件，一行一条：'YYYY-MM-DD HH:MM 文本'
     clock = {
-        -- schedule / alarms file, one entry per line: 'YYYY-MM-DD HH:MM text'
         schedule_file = os.getenv('HOME') .. '/.local/state/lbar/schedule.conf',
     },
 
+    -- 应用启动器
     launcher = {
-        use_dmenu_path = true,
-        -- custom your own entries
-        -- entries = {
+        use_dmenu_path = true,  -- true 时合并 $PATH 下所有可执行文件
+        -- entries = {          -- 自定义启动项
         --     { name = 'terminal', cmd = 'alacritty' },
         --     { name = 'files', cmd = 'pcmanfm' },
         --     { name = 'browser', cmd = 'firefox' },
@@ -213,12 +233,13 @@ return {
         -- },
     },
 
+    -- 天气面板
     weather = {
-        units = 'c',
-        refresh_sec = 900,
+        units = 'c',            -- 'c' 摄氏 | 'f' 华氏
+        refresh_sec = 900,      -- 刷新间隔（秒）
     },
 
-    -- ui_demo 'windows' tab: window move/resize steps (px per click)
+    -- ui_demo 'windows' 标签页：窗口移动/缩放步长（px/次）
     move_window = {
         step = 30,
         mode = 'auto_float',
@@ -227,5 +248,7 @@ return {
     resize_window = {
         step = 50,
     },
+
+    -- 电源菜单确认（battery 插件兼容读取）
     power = { confirm = true },
 }

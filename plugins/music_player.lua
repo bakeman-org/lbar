@@ -182,7 +182,7 @@ local function build_model(ctx, user_size)
 		PROG_H = 6,
 		CTRL_H = lh + 28,
 		APPBAR = lh + 26,
-		SECT_H = lh + 16,
+		SECT_H = lh + 24,
 		ROW_H = math.max(46, lh + 28),
 		BOTBAR = lh + 24,
 	}
@@ -202,7 +202,7 @@ local function build_model(ctx, user_size)
 	m.H = top_h + m.VROWS * pitch - m.ROW_GAP + m.BOTBAR
 
 	local tw = function(s)
-		return select(1, ctx.get_text_size(s))
+		return ctx.text_width(s)
 	end
 	local wmax = math.max(tw(I.t(L_PREV)), tw(I.t(L_REW)), tw(I.t(L_PLAY)), tw(I.t(L_PAUSE)), tw(I.t(L_FF)), tw(I.t(L_NEXT)))
 	m.BTN_W = wmax + 40
@@ -276,7 +276,7 @@ local function do_draw(p)
 	m.VROWS = math.max(3, math.floor((band + m.ROW_GAP) / pitch))
 	local l = layout(m)
 	local tw = function(str)
-		return select(1, ctx.get_text_size(str))
+		return ctx.text_width(str)
 	end
 	local card_w = m.W - m.PAD * 2
 
@@ -407,7 +407,7 @@ local function do_draw(p)
 	p:text(m.W - m.PAD - cnt_w, sy, cnt, T.hint)
 
 	local sq_w = 260
-	local sq_h = lh + 4
+	local sq_h = lh + 18
 	local sq_x = m.W - m.PAD - cnt_w - 16 - sq_w
 	local sq_y = l.sect_y + math.floor((l.sect_h - sq_h) / 2)
 	p.input:set_rect(sq_x, sq_y, sq_w, sq_h)
@@ -469,7 +469,7 @@ function M.bar_label()
 end
 
 function M.width(ctx)
-	return select(1, ctx.get_text_size(M.bar_label())) + 20
+	return ctx.text_width(M.bar_label()) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)
