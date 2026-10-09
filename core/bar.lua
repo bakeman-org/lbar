@@ -1,6 +1,7 @@
 -- core/bar.lua — MD3 floating bar
 local M = {}
 local ffi = require("ffi")
+local Util = require("core.util")
 
 local Bar = {}
 Bar.__index = Bar
@@ -46,6 +47,7 @@ function Bar:rect(x, y, w, h, c)
 	self.ctx.L.surf_fill(self.surf, self.w, self.h, x, y, w, h, c)
 end
 function Bar:rrect(x, y, w, h, r, c)
+	r = Util.corner_r(self.ctx, r)
 	self.ctx.L.surf_rrect_aa(self.surf, self.w, self.h, x, y, w, h, r, c)
 end
 function Bar:text(x, y, str, fg)
@@ -125,7 +127,7 @@ function Bar:draw()
 	local T = self.ctx.theme
 	FT.surf_fill(self.surf, self.w, self.h, 0, 0, self.w, self.h, 0x00000000)
 	if self.margin > 0 then
-		FT.surf_rrect_aa(self.surf, self.w, self.h, 0, 0, self.w, self.h, self.h / 2, T.surface)
+		FT.surf_rrect_aa(self.surf, self.w, self.h, 0, 0, self.w, self.h, Util.corner_r(self.ctx, self.h / 2), T.surface)
 	else
 		FT.surf_fill(self.surf, self.w, self.h, 0, 0, self.w, self.h, T.surface)
 	end
@@ -136,7 +138,7 @@ function Bar:draw()
 			local is_hover = (self.hover_plugin == p)
 			local is_active = (self.ctx.active_plugin_name == p.name and self.ctx.popup_visible)
 			if is_hover or is_active then
-				FT.surf_rrect_aa(self.surf, self.w, self.h, p.x - 6, 4, p.w + 12, self.h - 8, (self.h - 8) / 2, T.secondary_ctr)
+				FT.surf_rrect_aa(self.surf, self.w, self.h, p.x - 6, 4, p.w + 12, self.h - 8, Util.corner_r(self.ctx, (self.h - 8) / 2), T.secondary_ctr)
 			end
 			local ok, err = pcall(p.mod.draw, self.ctx, self, p.x, 0, p.w, self.h)
 			if not ok then

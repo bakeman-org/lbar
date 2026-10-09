@@ -337,8 +337,20 @@ typedef struct lbar_ctx {
   int bar_w, bar_h;
   int bar_map_w, bar_map_h;
   int bar_pos;
+  int bar_margin;
   int bar_configured;
   int bar_busy;
+
+  /* full-screen transparent catcher surface (wayland): sits on the TOP
+   * layer under the OVERLAY panels and delivers presses that land outside
+   * every panel so dismiss-on-outside-click works without a pointer grab */
+  struct wl_surface *catch_surf;
+  struct zwlr_layer_surface_v1 *catch_layer;
+  struct wl_shm_pool *catch_pool;
+  struct wl_buffer *catch_buf;
+  uint32_t *catch_pix;
+  int catch_map_w, catch_map_h;
+  int catch_on;
 
   int have_comp, have_shm, have_seat, have_out, have_shell;
 
@@ -569,6 +581,12 @@ static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
   c->ptr_popup = -1;
   if (surf == c->bar_surf) {
     c->ptr_target = 1;
+  } else if (c->catch_surf && surf == c->catch_surf) {
+    /* catcher surface: no enter event (nothing tracks hover there) */
+    c->ptr_target = 3;
+    c->ptr_x = wl_fixed_to_int(sx);
+    c->ptr_y = wl_fixed_to_int(sy);
+    return;
   } else {
     c->ptr_target = 0;
     for (int i = 0; i < c->n_popups; i++) {
@@ -601,7 +619,7 @@ static void ptr_motion(void *data, struct wl_pointer *p, uint32_t t,
   lbar_ctx *c = data;
   (void)p;
   (void)t;
-  if (c->ptr_target == 0)
+  if (c->ptr_target == 0 || c->ptr_target == 3)
     return;
   c->ptr_x = wl_fixed_to_int(sx);
   c->ptr_y = wl_fixed_to_int(sy);
@@ -636,6 +654,11 @@ static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
   if (c->ptr_target == 0)
     return;
   int type = (state == WL_POINTER_BUTTON_STATE_PRESSED) ? 2 : 3;
+  if (c->ptr_target == 3) {
+    /* catcher surface press/release: lua target 2 = outside every panel */
+    ev_push(c, type, c->ptr_x, c->ptr_y, 0, 0, wl_btn_code(btn), 2, 0, 0, -1);
+    return;
+  }
   ev_push(c, type, c->ptr_x, c->ptr_y, 0, 0, wl_btn_code(btn),
           c->ptr_target == 2 ? 1 : 0, 0, 0, c->ptr_popup);
 }
@@ -646,7 +669,7 @@ static void ptr_axis(void *data, struct wl_pointer *p, uint32_t t,
   (void)t;
   if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL)
     return;
-  if (c->ptr_target == 0)
+  if (c->ptr_target == 0 || c->ptr_target == 3)
     return;
   int btn = (value < 0) ? 4 : 5;
   ev_push(c, 2, c->ptr_x, c->ptr_y, 0, 0, btn, c->ptr_target == 2 ? 1 : 0, 0,
@@ -1092,6 +1115,7 @@ static int wl_create_bar(lbar_ctx *c, int h, int pos, int margin) {
   c->bar_pos = pos;
   c->bar_w = bw;
   c->bar_h = h;
+  c->bar_margin = margin;
 
   c->bar_surf = wl_compositor_create_surface(c->wl_comp);
   uint32_t anchor = (pos == 0) ? (ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
@@ -1655,6 +1679,135 @@ void lbar_ptr_ungrab(lbar_ctx *c) {
   XFlush(c->x_dpy);
 }
 
+/* ── wayland outside-click catcher ──
+ * a full-screen transparent layer surface on the TOP layer (panels live on
+ * OVERLAY, so they stay above it). its input region covers everything except
+ * the bar strip, so a press on the desktop or on any regular app window is
+ * delivered here and dismissed the dismiss-on-outside-click panels — the
+ * wayland equivalent of the X11 pointer grab. */
+static void catch_buf_release(void *data, struct wl_buffer *b) {
+  (void)data;
+  (void)b;
+}
+static const struct wl_buffer_listener catch_buf_listener = {
+    .release = catch_buf_release,
+};
+
+static void catch_configure(void *data, struct zwlr_layer_surface_v1 *ls,
+                            uint32_t serial, uint32_t w, uint32_t h) {
+  lbar_ctx *c = data;
+  zwlr_ls_ack_configure(ls, serial);
+  if (!c->catch_surf || ls != c->catch_layer)
+    return;
+  int nw = (int)w > 0 ? (int)w : c->screen_w;
+  int nh = (int)h > 0 ? (int)h : c->screen_h;
+  if (nw != c->catch_map_w || nh != c->catch_map_h || !c->catch_buf) {
+    if (c->catch_buf) {
+      wl_buffer_destroy(c->catch_buf);
+      c->catch_buf = NULL;
+    }
+    if (c->catch_pool) {
+      wl_shm_pool_destroy(c->catch_pool);
+      c->catch_pool = NULL;
+    }
+    if (c->catch_pix) {
+      munmap(c->catch_pix, (size_t)c->catch_map_w * 4 * (size_t)c->catch_map_h);
+      c->catch_pix = NULL;
+    }
+    /* fresh memfd pages are zero-filled: the buffer stays fully transparent */
+    if (wl_make_buffer(c->wl_shm, nw, nh, &c->catch_pool, &c->catch_buf,
+                       &c->catch_pix) < 0)
+      return;
+    c->catch_map_w = nw;
+    c->catch_map_h = nh;
+    wl_buffer_add_listener(c->catch_buf, &catch_buf_listener, c);
+    wl_surface_attach(c->catch_surf, c->catch_buf, 0, 0);
+    wl_surface_damage_buffer(c->catch_surf, 0, 0, nw, nh);
+  }
+  wl_surface_commit(c->catch_surf);
+  wl_display_flush(c->wl_dpy);
+}
+static void catch_closed(void *data, struct zwlr_layer_surface_v1 *ls) {
+  (void)data;
+  (void)ls;
+}
+static const struct zwlr_layer_surface_v1_listener catch_layer_listener = {
+    .configure = catch_configure,
+    .closed = catch_closed,
+};
+
+static void catch_destroy_slot(lbar_ctx *c) {
+  if (c->catch_layer)
+    zwlr_ls_destroy(c->catch_layer);
+  if (c->catch_surf)
+    wl_surface_destroy(c->catch_surf);
+  if (c->catch_buf)
+    wl_buffer_destroy(c->catch_buf);
+  if (c->catch_pool)
+    wl_shm_pool_destroy(c->catch_pool);
+  if (c->catch_pix)
+    munmap(c->catch_pix, (size_t)c->catch_map_w * 4 * (size_t)c->catch_map_h);
+  c->catch_layer = NULL;
+  c->catch_surf = NULL;
+  c->catch_buf = NULL;
+  c->catch_pool = NULL;
+  c->catch_pix = NULL;
+  c->catch_map_w = 0;
+  c->catch_map_h = 0;
+}
+
+int lbar_outside_catch(lbar_ctx *c, int enable) {
+  if (!c || !c->is_wayland)
+    return 0;
+  enable = enable ? 1 : 0;
+  if (enable == c->catch_on)
+    return 0;
+  c->catch_on = enable;
+  if (!enable) {
+    if (c->catch_surf)
+      catch_destroy_slot(c);
+    wl_display_flush(c->wl_dpy);
+    return 0;
+  }
+  if (c->catch_surf)
+    return 0;
+  c->catch_surf = wl_compositor_create_surface(c->wl_comp);
+  if (!c->catch_surf)
+    return -1;
+  c->catch_layer = zwlr_ls_get_layer_surface(
+      c->wl_shell, c->catch_surf, c->wl_out, ZWLR_LAYER_SHELL_V1_LAYER_TOP,
+      "lbar-catch");
+  if (!c->catch_layer) {
+    catch_destroy_slot(c);
+    return -1;
+  }
+  zwlr_ls_set_size(c->catch_layer, c->screen_w, c->screen_h);
+  zwlr_ls_set_anchor(c->catch_layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+                                         ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+                                         ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+                                         ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+  zwlr_ls_set_exclusive_zone(c->catch_layer, -1);
+  zwlr_ls_set_kb(c->catch_layer,
+                 ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+  zwlr_layer_surface_v1_add_listener(c->catch_layer, &catch_layer_listener, c);
+  /* input region = full screen minus the bar strip: bar clicks must reach
+   * the bar (same TOP layer, catcher mapped later would cover it) */
+  struct wl_region *reg = wl_compositor_create_region(c->wl_comp);
+  if (reg) {
+    int strip = c->bar_h + c->bar_margin;
+    if (c->bar_pos == 0)
+      wl_region_add(reg, 0, strip, c->screen_w, c->screen_h - strip);
+    else
+      wl_region_add(reg, 0, 0, c->screen_w, c->screen_h - strip);
+    wl_surface_set_input_region(c->catch_surf, reg);
+    wl_region_destroy(reg);
+  }
+  wl_surface_commit(c->catch_surf);
+  wl_display_roundtrip(c->wl_dpy); /* let configure+attach land before input */
+  LOG_INFO("outside catcher on");
+  return 0;
+}
+
 int lbar_x_get_region(lbar_ctx *c, int x, int y, int w, int h,
                       unsigned char *out, int out_max) {
   if (c->is_wayland || w <= 0 || h <= 0 || out_max < w * h * 3)
@@ -2027,6 +2180,8 @@ void lbar_close(lbar_ctx *c) {
       wl_shm_pool_destroy(c->bar_pool);
     if (c->bar_pix)
       munmap(c->bar_pix, (size_t)c->bar_map_w * c->bar_map_h * 4);
+
+    catch_destroy_slot(c);
 
     if (c->wl_ptr)
       wl_pointer_destroy(c->wl_ptr);

@@ -146,6 +146,9 @@ function TI:_emit_change()
 	self.goal_x = nil
 	self._cur_row = nil
 	self._toolbar = false
+	-- content changed: follow the caret — wrap mode stops growing at
+	-- max_lines and scrolls instead, so typing must reveal the last char
+	self:_ensure_cursor_visible()
 	if self.on_change then
 		self.on_change(self.value)
 	end
@@ -572,6 +575,9 @@ function TI:extra_h()
 end
 
 function TI:_ensure_cursor_visible()
+	if not self.text_w then
+		return
+	end
 	if not self.wrap then
 		local cx = self:_x_of(self.cursor)
 		local left = self.text_x
@@ -841,9 +847,7 @@ function TI:on_key(sym, ctrl, shift, text)
 		self.cursor = ni
 		self.goal_x = nil
 		self._cur_row = nil
-		if self.wrap then
-			self:_ensure_cursor_visible()
-		end
+		self:_ensure_cursor_visible()
 		return true
 	elseif sym == XK_Right then
 		local ni = ctrl and next_word(self.value, self.cursor) or utf8_next(self.value, self.cursor)
@@ -858,9 +862,7 @@ function TI:on_key(sym, ctrl, shift, text)
 		self.cursor = ni
 		self.goal_x = nil
 		self._cur_row = nil
-		if self.wrap then
-			self:_ensure_cursor_visible()
-		end
+		self:_ensure_cursor_visible()
 		return true
 	elseif sym == XK_Home then
 		if shift then
@@ -880,9 +882,7 @@ function TI:on_key(sym, ctrl, shift, text)
 			self.cursor = 1
 		end
 		self.goal_x = nil
-		if self.wrap then
-			self:_ensure_cursor_visible()
-		end
+		self:_ensure_cursor_visible()
 		return true
 	elseif sym == XK_End then
 		if shift then
@@ -903,9 +903,7 @@ function TI:on_key(sym, ctrl, shift, text)
 			self.cursor = #self.value + 1
 		end
 		self.goal_x = nil
-		if self.wrap then
-			self:_ensure_cursor_visible()
-		end
+		self:_ensure_cursor_visible()
 		return true
 	elseif sym == XK_Up or sym == XK_Down then
 		if not self.wrap then
@@ -947,9 +945,7 @@ function TI:on_key(sym, ctrl, shift, text)
 				self:_emit_change()
 			end
 		end
-		if self.wrap then
-			self:_ensure_cursor_visible()
-		end
+		self:_ensure_cursor_visible()
 		return true
 	elseif sym == XK_Delete then
 		if self:has_selection() then
@@ -961,9 +957,7 @@ function TI:on_key(sym, ctrl, shift, text)
 				self:_emit_change()
 			end
 		end
-		if self.wrap then
-			self:_ensure_cursor_visible()
-		end
+		self:_ensure_cursor_visible()
 		return true
 	elseif sym == XK_Return or sym == XK_KP_Enter then
 		if self.on_submit then

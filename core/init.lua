@@ -44,6 +44,7 @@ return function(SCRIPT_DIR)
     int lbar_kbd_ungrab(lbar_ctx *c);
     int  lbar_ptr_grab(lbar_ctx *c, int id);
     void lbar_ptr_ungrab(lbar_ctx *c);
+    int  lbar_outside_catch(lbar_ctx *c, int enable);
     int  lbar_x_get_region(lbar_ctx *c, int x, int y, int w, int h,
                            unsigned char *out, int out_max);
     int64_t lbar_key_lookup(lbar_ctx *c, int keycode, int state, char *out, int out_max);

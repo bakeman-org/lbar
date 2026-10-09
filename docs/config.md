@@ -19,6 +19,7 @@ The settings panel (`ctrl+alt+j`) edits almost every key below in place.
 | `theme` | string | `'md3_dark'` | dark-mode palette name (list below) |
 | `theme_light` | string | `'md3_light'` | light-mode palette name |
 | `theme_mode` | `'dark'` \| `'light'` | `'dark'` | current mode; persisted by `ctrl+alt+k` and the settings panel |
+| `corner` | `'round'` \| `'square'` | `'round'` | global corner style; `'square'` flattens buttons, pills, cards, the bar and popup windows to sharp corners. Switchable from the settings panel (Options → style → corner style) |
 | `lang` | `'auto'` \| `'en'` \| `'zh'` | `'auto'` | UI language; `'auto'` detects from `$LANG` (`zh*` → Chinese). Switchable live from the settings panel (Options → language). Every user-visible string is translated — panel titles, labels, buttons, statuses, toasts and bar item labels (bar labels stay compact in zh) |
 | `font_path` | string | — | primary font (TTF/OTF), `~` allowed |
 | `font_size` | number | `14` | font size px |
@@ -106,12 +107,34 @@ panels = {
 ```
 
 - `pos` — `center` `top` `bottom` `left` `right` `top_left` `top_right`
-  `bottom_left` `bottom_right`
+  `bottom_left` `bottom_right`, or `auto` (anchor below the bar item)
 - `anim` — `auto` (derived from pos/anchor) `slide_up` `slide_down`
   `slide_left` `slide_right` `none`
 
-Bar-anchored opens (clicking the bar item) follow the bar item position;
-`panels.<name>.pos` is used when toggled via keybind.
+An explicit `pos` (anything but `auto`) wins over bar anchoring: the panel
+opens at its configured entrance position on every open, including bar-item
+clicks. `auto` panels anchor to their bar item. A dragged position still
+wins over everything and is kept across reopens. When a free-positioned
+panel would land on top of a visible one, it cascades diagonally until
+clear (`Panel:avoid_overlap`).
+
+`panels.<name>.anim` beats `animation.style`, and both are read at startup.
+
+### Window animations (PPT-style enter/exit)
+
+```lua
+animation = {
+  enabled     = true,   -- master switch (false = panels appear instantly)
+  style       = 'auto', -- or slide_up / slide_down / slide_left / slide_right / none
+  duration_ms = 150,    -- enter/exit travel time
+  distance    = 40,     -- slide distance in px
+  exit        = true,   -- animate the exit too
+}
+```
+
+With `style = 'auto'` each panel slides in from its anchor side (bar-anchored
+panels slide along the anchor direction, free-positioned panels along their
+`panels.<name>.pos` edge).
 
 All panels are draggable: press and hold anywhere on the title bar (except
 the `×` close button) and move the mouse. Free-positioned panels remember
@@ -140,7 +163,10 @@ panel_opts = {
 ```
 
 - `dismiss_outside` (default `true`) — when `false`, clicking outside the
-  panel does not close it and the click passes through to other apps.
+  panel does not close it and the click passes through to other apps. On
+  X11 this is a pointer grab; on Wayland a full-screen transparent catcher
+  surface (below the panels, bar strip excluded) delivers the outside press
+  and it is swallowed, mirroring the X11 behavior.
 
 ## Plugin sections
 

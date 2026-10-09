@@ -19,7 +19,10 @@ local WIDGET_LINES = {
 	"toast notifications · panel header · close",
 }
 
-local TABS = { "controls", "lists", "inventory" }
+local TABS = { "controls", "lists", "windows", "inventory" }
+
+local MIN_PANEL_W = 220
+local MIN_PANEL_H = 100
 
 local function build_model(ctx, user_size)
 	local lh = ctx.get_line_height()
@@ -92,7 +95,29 @@ local function build_model(ctx, user_size)
 	cy = cy + m.PAN_ROWS * m.PAN_ROW_H
 	m.INV_H = cy - y
 
-	m.H = math.max(m.CONTROLS_H, m.LISTS_H, m.INV_H) + y + 20
+	-- windows tab: move d-pad, resize d-pad, step rows, reset
+	cy = y
+	m.MV_LBL_Y = cy
+	cy = cy + m.SEC_H
+	m.MV_P1_Y = cy
+	cy = cy + m.BTN_H + 8
+	m.MV_P2_Y = cy
+	cy = cy + m.BTN_H + 14
+	m.RZ_LBL_Y = cy
+	cy = cy + m.SEC_H
+	m.RZ_P1_Y = cy
+	cy = cy + m.BTN_H + 8
+	m.RZ_P2_Y = cy
+	cy = cy + m.BTN_H + 14
+	m.MSTEP_Y = cy
+	cy = cy + m.PAN_ROW_H
+	m.RSTEP_Y = cy
+	cy = cy + m.PAN_ROW_H
+	m.WIN_RESET_Y = cy
+	cy = cy + m.BTN_H
+	m.WINDOWS_H = cy - y
+
+	m.H = math.max(m.CONTROLS_H, m.LISTS_H, m.INV_H, m.WINDOWS_H) + y + 20
 	if user_size then
 		m.W = math.max(m.W, user_size.w)
 		m.H = math.max(m.H, user_size.h)
@@ -149,6 +174,201 @@ local function draw_controls(p)
 
 	ui:label(PAD, m.TF_LBL_Y, I.t("text field  (click, then type)"), T.hint)
 	ui:text_field("demo_tf", PAD, m.TF_Y, inner, m.TF_H, M.text, { placeholder = I.t("type here…") })
+end
+
+-- ------------------------------------------------------------ window ops
+-- move/resize for the focused external window (i3/hyprland) or the active
+-- lbar panel; merged here from the former move_window/resize_window plugins
+
+local function has_cmd(cmd)
+	local f = io.popen("command -v " .. cmd .. " 2>/dev/null")
+	if not f then
+		return false
+	end
+	local r = f:read("*l")
+	f:close()
+	return r ~= nil and r ~= ""
+end
+
+local function pick_panel(ctx, mark)
+	local ap = ctx.active_panel
+	if ap and ap.visible and ap[mark] then
+		return ap
+	end
+	for _, p in pairs(ctx._panels or {}) do
+		if p.visible and p[mark] then
+			return p
+		end
+	end
+	return nil
+end
+
+local function move_external(dx, dy)
+	if M.wm == "i3" then
+		local dir = dx < 0 and "left" or dx > 0 and "right" or dy < 0 and "up" or "down"
+		return os.execute(string.format(
+			"i3-msg 'move %s %d px' >/dev/null 2>&1 &", dir, math.abs(dx + dy))) == 0
+	elseif M.wm == "hyprland" then
+		local Hypr = require("core.wm.hyprland")
+		local tf = Hypr.dispatch_cmd("hl.dispatch(hl.dsp.window.float())", "togglefloating")
+		if M.mode == "auto_float" then
+			return os.execute(string.format([[
+(
+  if hyprctl -j activewindow 2>/dev/null | grep -q '"floating": *false'; then
+    %s
+  fi
+  %s
+) &
+]], tf, Hypr.dispatch_cmd(
+				string.format("hl.dispatch(hl.dsp.window.move({ x = %d, y = %d }))", dx, dy),
+				string.format("moveactive %d %d", dx, dy)))) == 0
+		end
+		return os.execute(string.format("(%s) &", Hypr.dispatch_cmd(
+			string.format("hl.dispatch(hl.dsp.window.move({ x = %d, y = %d }))", dx, dy),
+			string.format("moveactive %d %d", dx, dy)))) == 0
+	end
+	return false
+end
+
+local function resize_external(dx, dy)
+	if M.wm == "i3" then
+		local axis = dx ~= 0 and "width" or "height"
+		local op = (dx > 0 or dy > 0) and "grow" or "shrink"
+		local amt = math.abs(dx + dy)
+		return os.execute(string.format(
+			"i3-msg 'resize %s %s %d px' >/dev/null 2>&1 &", op, axis, amt)) == 0
+	elseif M.wm == "hyprland" then
+		local Hypr = require("core.wm.hyprland")
+		return os.execute(string.format("(%s) &", Hypr.dispatch_cmd(
+			string.format("hl.dispatch(hl.dsp.window.resize({ x = %d, y = %d }))", dx, dy),
+			string.format("resizeactive %d %d", dx, dy)))) == 0
+	end
+	return false
+end
+
+local function win_move(ctx, dx, dy)
+	local ok
+	local p = pick_panel(ctx, "move_by")
+	if p then
+		p:move_by(dx, dy)
+		ok = true
+	else
+		ok = move_external(dx, dy)
+	end
+	if ok then
+		ctx.notify(I.t("window moved"), { style = "info", duration = 900 })
+	else
+		ctx.notify(I.t("no window to move"), { style = "error" })
+	end
+end
+
+local function win_resize(ctx, dx, dy)
+	local ok
+	local p = pick_panel(ctx, "live_resize")
+	if p then
+		p._orig_geom = p._orig_geom or { w = p.w, h = p.h, x = p.sx, y = p.sy }
+		local nw = math.max(MIN_PANEL_W, p.w + dx)
+		local nh = math.max(MIN_PANEL_H, p.h + dy)
+		p.user_size = { w = nw, h = nh }
+		p:live_resize(nw, nh)
+		ok = true
+	else
+		ok = resize_external(dx, dy)
+	end
+	if ok then
+		ctx.notify(I.t("window resized"), { style = "info", duration = 900 })
+	else
+		ctx.notify(I.t("no window to resize"), { style = "error" })
+	end
+end
+
+local function win_reset(ctx)
+	local p = pick_panel(ctx, "live_resize")
+	if not p then
+		ctx.notify(I.t("no panel to reset"), { style = "error" })
+		return
+	end
+	p.user_size = nil
+	if p._orig_geom then
+		local g = p._orig_geom
+		p:live_resize(g.w, g.h)
+		p:move_to(g.x, g.y)
+	end
+	ctx.notify(I.t("panel size reset"), { style = "success" })
+end
+
+local function defer_win(ctx, fn)
+	M.pending_action = fn
+end
+
+local function draw_windows(p)
+	local m, ctx, ui, T = p.m, p.ctx, p.ui, p.ctx.theme
+	local lh, PAD, W = m.LH, m.PAD, m.W
+	local inner = W - PAD * 2
+	local btn_w = math.floor((inner - 2 * 8) / 3)
+	local tonal = { tonal = true, bg = T.surface_hi }
+
+	ui:label(PAD, m.MV_LBL_Y, I.t("move window"), T.hint)
+	if ui:id_button("mv_up", PAD + btn_w + 8, m.MV_P1_Y, btn_w, m.BTN_H, "↑", tonal) then
+		defer_win(ctx, function()
+			win_move(ctx, 0, -M.mv_step)
+		end)
+	end
+	if ui:id_button("mv_left", PAD, m.MV_P2_Y, btn_w, m.BTN_H, "←", tonal) then
+		defer_win(ctx, function()
+			win_move(ctx, -M.mv_step, 0)
+		end)
+	end
+	if ui:id_button("mv_down", PAD + btn_w + 8, m.MV_P2_Y, btn_w, m.BTN_H, "↓", tonal) then
+		defer_win(ctx, function()
+			win_move(ctx, 0, M.mv_step)
+		end)
+	end
+	if ui:id_button("mv_right", PAD + (btn_w + 8) * 2, m.MV_P2_Y, btn_w, m.BTN_H, "→", tonal) then
+		defer_win(ctx, function()
+			win_move(ctx, M.mv_step, 0)
+		end)
+	end
+
+	ui:label(PAD, m.RZ_LBL_Y, I.t("resize window"), T.hint)
+	if ui:id_button("rz_narrow", PAD, m.RZ_P1_Y, btn_w, m.BTN_H, "←", tonal) then
+		defer_win(ctx, function()
+			win_resize(ctx, -M.rz_step, 0)
+		end)
+	end
+	if ui:id_button("rz_tall", PAD + btn_w + 8, m.RZ_P1_Y, btn_w, m.BTN_H, "↑", tonal) then
+		defer_win(ctx, function()
+			win_resize(ctx, 0, M.rz_step)
+		end)
+	end
+	if ui:id_button("rz_wide", PAD + (btn_w + 8) * 2, m.RZ_P1_Y, btn_w, m.BTN_H, "→", tonal) then
+		defer_win(ctx, function()
+			win_resize(ctx, M.rz_step, 0)
+		end)
+	end
+	if ui:id_button("rz_short", PAD + btn_w + 8, m.RZ_P2_Y, btn_w, m.BTN_H, "↓", tonal) then
+		defer_win(ctx, function()
+			win_resize(ctx, 0, -M.rz_step)
+		end)
+	end
+
+	local rows = {
+		{ y = m.MSTEP_Y, label = I.t("move step px"), value = string.format("%d px", M.mv_step) },
+		{ y = m.RSTEP_Y, label = I.t("resize step px"), value = string.format("%d px", M.rz_step) },
+	}
+	for _, r in ipairs(rows) do
+		p:rrect(PAD, r.y, inner, m.PAN_ROW_H, 14, T.surface)
+		local ty = r.y + math.floor((m.PAN_ROW_H - lh) / 2)
+		p:text(PAD + 16, ty, r.label, T.on_var)
+		local vw = select(1, ctx.get_text_size(r.value))
+		p:text(W - PAD - 16 - vw, ty, r.value, T.hint)
+	end
+
+	if ui:id_button("win_reset", PAD, m.WIN_RESET_Y, inner, m.BTN_H, I.t("reset panel"), { filled = true }) then
+		defer_win(ctx, function()
+			win_reset(ctx)
+		end)
+	end
 end
 
 local function draw_lists(p)
@@ -241,35 +461,48 @@ local function do_draw(p)
 	end
 
 	local ui = p.ui
-	local tx = PAD
-	for _, t in ipairs(TABS) do
-		local label = I.t(t)
-		local tw = select(1, ctx.get_text_size(label)) + 28
-		local active = M.tab == t
-		if ui:id_button("demo_tab_" .. t, tx, m.TAB_Y, tw, m.TAB_H, label,
-				{ filled = active, tonal = not active }) then
-			M.tab = t
+	local labels, active = {}, 1
+	for i, t in ipairs(TABS) do
+		labels[i] = I.t(t)
+		if M.tab == t then
+			active = i
 		end
-		tx = tx + tw + 10
+	end
+	local sel = ui:segmented(PAD, m.TAB_Y, W - PAD * 2, m.TAB_H, labels, active)
+	if sel > 0 then
+		M.tab = TABS[sel]
 	end
 
 	if M.tab == "controls" then
 		draw_controls(p)
 	elseif M.tab == "lists" then
 		draw_lists(p)
+	elseif M.tab == "windows" then
+		draw_windows(p)
 	else
 		draw_inventory(p)
 	end
 end
 
+function M.tick(ctx, dt)
+	if M.pending_action then
+		local fn = M.pending_action
+		M.pending_action = nil
+		local ok, err = pcall(fn)
+		if not ok then
+			log("pending action error: %s", tostring(err))
+		end
+	end
+end
+
 function M.width(ctx)
-	return select(1, ctx.get_text_size(I.t("UI"))) + 20
+	return select(1, ctx.get_text_size(I.t("UI demo"))) + 20
 end
 
 function M.draw(ctx, s, x, y, w, h)
 	local lh = ctx.get_line_height()
 	local active = ctx.active_plugin_name == "ui_demo" and ctx.popup_visible
-	s:text(x + 10, math.floor((h - lh) / 2), I.t("UI"), active and ctx.theme.primary or ctx.theme.on_surface)
+	s:text(x + 10, math.floor((h - lh) / 2), I.t("UI demo"), active and ctx.theme.primary or ctx.theme.on_surface)
 end
 
 function M.on_click(ctx, btn, lx, ly, gx, gw)
@@ -287,6 +520,52 @@ function M.init(ctx)
 	M.sel = 0
 	M.tab = "controls"
 	M.sb_off = 0
+	M.pending_action = nil
+
+	-- merged window ops (former move_window / resize_window plugins)
+	local mvcfg = ctx.config.move_window or {}
+	local rzcfg = ctx.config.resize_window or {}
+	M.mv_step = math.max(1, tonumber(mvcfg.step) or 30)
+	M.rz_step = math.max(4, tonumber(rzcfg.step) or 30)
+	M.mode = mvcfg.mode or "auto_float"
+	if has_cmd("i3-msg") then
+		M.wm = "i3"
+	elseif has_cmd("hyprctl") then
+		M.wm = "hyprland"
+	else
+		M.wm = nil
+		log("no i3-msg or hyprctl - external window ops unavailable")
+	end
+
+	ctx.actions["move_win_left"] = function()
+		win_move(ctx, -M.mv_step, 0)
+	end
+	ctx.actions["move_win_right"] = function()
+		win_move(ctx, M.mv_step, 0)
+	end
+	ctx.actions["move_win_up"] = function()
+		win_move(ctx, 0, -M.mv_step)
+	end
+	ctx.actions["move_win_down"] = function()
+		win_move(ctx, 0, M.mv_step)
+	end
+	ctx.actions["resize_win_wider"] = function()
+		win_resize(ctx, M.rz_step, 0)
+	end
+	ctx.actions["resize_win_narrower"] = function()
+		win_resize(ctx, -M.rz_step, 0)
+	end
+	ctx.actions["resize_win_taller"] = function()
+		win_resize(ctx, 0, M.rz_step)
+	end
+	ctx.actions["resize_win_shorter"] = function()
+		win_resize(ctx, 0, -M.rz_step)
+	end
+	ctx.actions["reset_active_window"] = function()
+		defer_win(ctx, function()
+			win_reset(ctx)
+		end)
+	end
 
 	local panel = Panel.new(ctx, {
 		name = "ui_demo",

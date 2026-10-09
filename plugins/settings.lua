@@ -372,7 +372,7 @@ end
 table.sort(PALETTE_DARK)
 table.sort(PALETTE_LIGHT)
 
-local POS_CHOICES = { "center", "top", "top_left", "top_right", "bottom", "bottom_left", "bottom_right" }
+local POS_CHOICES = { "center", "top", "top_left", "top_right", "bottom", "bottom_left", "bottom_right", "left", "right", "auto" }
 
 -- MIUIX-style geometry: rounded card rows, unified side padding, small
 -- hint-coloured group titles in their own band with wide group separation
@@ -467,6 +467,8 @@ local function build_rows(ctx, lh, W, tab)
 		row({}, "padding", I.t("padding"), "num", { min = 0 })
 		row({}, "gap", I.t("gap"), "num", { min = 0 })
 		row({}, "bar_margin", I.t("bar margin"), "num", { min = 0 })
+		group(I.t("style"))
+		row({}, "corner", I.t("corner style"), "enum", { choices = { "round", "square" } })
 		group(I.t("fonts"))
 		row({}, "font_path", I.t("font path"), "str", { pick = "file" })
 		row({}, "font_size", I.t("font size"), "num", { min = 10, max = 32 })
@@ -608,8 +610,17 @@ local function save_enum(r, val)
 			I.init(M.ctx)
 			redraw_all()
 		end
-		local is_pos = r.path and r.path[1] == "panels"
-		M.ctx.notify(is_pos and I.t("saved — reload to apply") or I.t("saved"), { style = "success", duration = 1500 })
+		-- corner style also reshapes the popup windows (radius is fixed at
+		-- creation): hot reload rebuilds them so the look stays uniform
+		if r.key == "corner" and #(r.path or {}) == 0 then
+			M.ctx.notify(I.t("saved — reloading…"), { style = "info" })
+			defer(function()
+				M.ctx.actions.hot_reload()
+			end)
+			return
+		end
+		-- panel pos changes apply on the next open (no reload needed)
+		M.ctx.notify(I.t("saved"), { style = "success", duration = 1500 })
 	end
 end
 
@@ -623,6 +634,10 @@ local function save_panel_opt(name, field, lit, val)
 			local reg = M.ctx._panels and M.ctx._panels[name]
 			if reg and reg.opts then
 				reg.opts.ptr_grab = val
+			end
+			-- re-sync the wayland outside-click catcher / x11 grab
+			if M.ctx.sync_ptr_grab then
+				M.ctx.sync_ptr_grab()
 			end
 			M.ctx.notify(I.t("saved"), { style = "success", duration = 1500 })
 		end
@@ -861,34 +876,34 @@ local function do_draw(p)
 	-- header: opaque surface fill also covers rows scrolled past the top
 	p:draw_header(I.t("settings"), Util.keybind_hint(ctx, "toggle_settings"), PAD)
 
-	-- tab strip: opaque band over the scroll area, then a MIUI segmented
-	-- control (pill container, raised active segment, primary active text)
+	-- tab strip: opaque band over the scroll area, then the shared MIUI
+	-- segmented control from core/ui.lua
 	local fy = m.H - m.FOOTER_H - in_extra
 	p:rect(0, m.HEADER_H, W, m.TABS_H, p.bg)
-	local tabs = { { "themes", I.t("themes") }, { "options", I.t("options") }, { "panels", I.t("panels") } }
+	local tabs = { "themes", "options", "panels" }
 	local seg_h = lh + 18
 	local seg_y = m.HEADER_H + math.floor((m.TABS_H - seg_h) / 2)
-	local seg_w = math.floor((W - PAD * 2) / 3)
-	p:rrect(PAD, seg_y, W - PAD * 2, seg_h, math.floor(seg_h / 2), T.surface_hi)
+	local labels = {}
 	for i, t in ipairs(tabs) do
-		local sx = PAD + (i - 1) * seg_w
-		local sw = i == #tabs and (W - PAD * 2 - seg_w * (#tabs - 1)) or seg_w
-		local active = M.tab == t[1]
-		if active then
-			p:rrect(sx + 3, seg_y + 3, sw - 6, seg_h - 6, math.floor((seg_h - 6) / 2), T.bg)
-		end
-		local tw = select(1, ctx.get_text_size(t[2]))
-		p:text(sx + math.floor((sw - tw) / 2), seg_y + math.floor((seg_h - lh) / 2), t[2],
-			active and T.primary or T.hint)
-		if ui:clicked(sx, seg_y, sw, seg_h) then
-			if M.tab ~= t[1] then
-				M.tab = t[1]
-				M.scroll = 0
-				-- natural height differs per tab: refit from M.tick
-				M.need_fit = true
+		labels[i] = I.t(t)
+	end
+	local sel = ui:segmented(PAD, seg_y, W - PAD * 2, seg_h, labels,
+		M.tab and (function()
+			for i, t in ipairs(tabs) do
+				if t == M.tab then
+					return i
+				end
 			end
-			cancel_edit(p)
+		end)() or 1)
+	if sel > 0 then
+		local t = tabs[sel]
+		if M.tab ~= t then
+			M.tab = t
+			M.scroll = 0
+			-- natural height differs per tab: refit from M.tick
+			M.need_fit = true
 		end
+		cancel_edit(p)
 	end
 
 	-- footer: opaque band covers rows scrolled past the bottom; pill

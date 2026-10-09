@@ -16,7 +16,10 @@ function M.file_exists(p)
 end
 
 function M.file_mtime(path)
-	local p = io.popen(string.format("stat -c %%Y '%s' 2>/dev/null", path))
+	-- nanosecond mtime: second granularity silently misses a write that
+	-- lands in the same second as the previously recorded mtime (the value
+	-- then never changes again, so the watcher never fires)
+	local p = io.popen(string.format("stat -c %%.9Y '%s' 2>/dev/null", path))
 	if not p then
 		return nil
 	end
@@ -118,7 +121,23 @@ function M.keybind_hint(ctx, action)
 	return "?"
 end
 
+-- global corner style: config.corner == "square" flattens every rounded
+-- rect (controls, pills, cards, bar and popup windows) to sharp corners
+function M.corner_r(ctx, r)
+	if ctx and ctx.config and ctx.config.corner == "square" then
+		return 0
+	end
+	return r
+end
+
 function M.toggle_from_bar(ctx, name, gx, gw, align)
+	-- an explicit panels.<name>.pos wins over bar anchoring: the panel
+	-- opens at its configured entrance position ('auto' = anchor to bar)
+	local pcfg = ctx.config.panels and ctx.config.panels[name] or nil
+	if pcfg and pcfg.pos and pcfg.pos ~= "auto" then
+		ctx.show_panel(name)
+		return
+	end
 	local dir = (ctx.config.position == "bottom") and "above" or "below"
 	local ay = (ctx.config.position == "top") and ctx.bar.h or (ctx.scr_h - ctx.bar.h)
 	local ax = (align == "left") and gx or (gx + gw / 2)

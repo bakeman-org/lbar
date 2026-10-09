@@ -175,6 +175,37 @@ function UI:card(x, y, w, h, opts)
 	self.surf:rrect(x, y, w, h, r, opts.bg or T.surface_hi)
 end
 
+-- MIUI segmented control: pill container (surface_hi) with a raised active
+-- segment (bg pill, primary text); inactive segments use hint text.
+-- items = { label, ... }; returns the 1-based index clicked this frame (0 = none)
+function UI:segmented(x, y, w, h, items, active_idx)
+	local T = self.ctx.theme
+	local lh = self.ctx.get_line_height()
+	self.surf:rrect(x, y, w, h, math.floor(h / 2), T.surface_hi)
+	local n = #items
+	if n == 0 then
+		return 0
+	end
+	local seg_w = math.floor(w / n)
+	local clicked = 0
+	for i = 1, n do
+		local sx = x + (i - 1) * seg_w
+		local sw = i == n and (w - seg_w * (n - 1)) or seg_w
+		local active = i == active_idx
+		if active then
+			self.surf:rrect(sx + 3, y + 3, sw - 6, h - 6, math.floor((h - 6) / 2), T.bg)
+		end
+		local text = items[i]
+		local tw = select(1, self.ctx.get_text_size(text))
+		self.surf:text(math.floor(sx + (sw - tw) / 2), math.floor(y + (h - lh) / 2), text,
+			active and T.primary or T.hint)
+		if clicked == 0 and self:clicked(sx, y, sw, h) then
+			clicked = i
+		end
+	end
+	return clicked
+end
+
 function UI:divider(x, y, w, color)
 	self.surf:rect(x, y, w, 1, color or self.ctx.theme.outline)
 end

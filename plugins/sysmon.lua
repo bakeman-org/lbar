@@ -305,6 +305,7 @@ local function compute_layout(lh, ncores_display, scr_h, user_size)
 	L.PAD = PAD
 	L.W = 720
 	L.HEADER_H = lh + 26
+	L.SEARCH_ROW = lh + 8 -- search input row under the header
 	L.FOOTER_H = lh + 30
 	L.ROW_H = row_h(lh)
 	L.CHIP_H = chip_h(lh)
@@ -312,9 +313,9 @@ local function compute_layout(lh, ncores_display, scr_h, user_size)
 	L.CPU_CARD_H = L.ROW_H + SPARK_H + 16
 	local chip_rows = math.ceil(math.max(1, ncores_display) / 4)
 	L.CORES_H = chip_rows * L.CHIP_H + (chip_rows - 1) * CHIP_GAP
-	-- header + cpu/cores/memory/system groups + processes title + footer are
-	-- fixed; the process list takes the remainder of the height
-	local fixed = L.HEADER_H + TOP_PAD
+	-- header + search row + cpu/cores/memory/system groups + processes title
+	-- + footer are fixed; the process list takes the remainder of the height
+	local fixed = L.HEADER_H + 6 + L.SEARCH_ROW + TOP_PAD
 		+ L.TITLE_H + L.CPU_CARD_H + ROW_GAP + L.CORES_H
 		+ GROUP_GAP + L.TITLE_H + L.ROW_H + ROW_GAP + L.ROW_H
 		+ GROUP_GAP + L.TITLE_H + L.ROW_H + ROW_GAP + L.ROW_H
@@ -367,8 +368,8 @@ local function do_draw(p)
 	-- height and visible rows so the view bottom/footer always match p.w/p.h
 	m.W, m.H = p.w, p.h
 	local W, H = m.W, m.H
-	-- the header search input grows downward when text wraps: shift the
-	-- body down by the growth (Panel:fit grows the panel to match)
+	-- the search input (own row under the header) grows downward when text
+	-- wraps: shift the body down by the growth (Panel:fit grows the panel)
 	local in_extra = p.input and p.input:extra_h() or 0
 	local list_h = H - m.FIXED_H - in_extra
 	if list_h < m.ROW_H * 4 then
@@ -388,7 +389,7 @@ local function do_draw(p)
 	-- is painted on top further down, which clips every band without needing
 	-- a scissor primitive
 
-	local y = m.HEADER_H + TOP_PAD + in_extra
+	local y = m.HEADER_H + 6 + m.SEARCH_ROW + TOP_PAD + in_extra
 
 	-- cpu group: aggregate load row + history sparkline in one card
 	p:text(card_x + 6, y + m.TITLE_H - lh - 2, I.t("CPU"), T.hint)
@@ -623,19 +624,12 @@ local function do_draw(p)
 	end
 
 	-- header last: opaque fill also covers anything under the top edge;
-	-- the search input lives inside the header band
+	-- the search input lives on its own row below the header, so long text
+	-- grows the row downward (Panel:fit adds the extra height) instead of
+	-- overlapping the header band or the body cards
 	local hh = p:draw_header(I.t("System Monitor"), Util.keybind_hint(ctx, "toggle_sysmon"), PAD)
-	local hint = Util.keybind_hint(ctx, "toggle_sysmon")
-	local hw = select(1, ctx.get_text_size(hint))
-	local hint_x = p.rect_close.x - 12 - hw
-	local search_x = PAD + select(1, ctx.get_text_size(I.t("System Monitor"))) + 20
-	local search_w = hint_x - 12 - search_x
-	local search_h = lh + 4
-	local search_y = math.floor((hh - search_h) / 2)
-	if search_w > 120 then
-		p.input:set_rect(search_x, search_y, search_w, search_h)
-		p.input:draw(p)
-	end
+	p.input:set_rect(PAD, hh + 6, W - PAD * 2, lh + 4)
+	p.input:draw(p)
 end
 
 function M.init(ctx)

@@ -5,6 +5,7 @@ local ffi = require("ffi")
 local bit = require("bit")
 local UIfw = require("core.ui")
 local TI = require("core.text_input")
+local Util = require("core.util")
 
 local Panel = {}
 Panel.__index = Panel
@@ -38,11 +39,22 @@ function M.new(ctx, opts)
 	self.ctx = ctx
 	self.opts = opts
 	self.name = opts.name or "panel"
-	self.radius = opts.radius or 24
+	self.radius = Util.corner_r(ctx, opts.radius or 24)
 	self.bg = opts.bg or ctx.theme.surface
 	self.visible = false
 	self.animating = false
-	self.anim = opts.anim or "auto"
+	-- animation knobs come from config.animation (global) with per-panel
+	-- overrides in config.panels.<name>.anim; a plugin's opts.anim wins over
+	-- both, and the global enabled=false master switch silences everything
+	local anim_cfg = (ctx.config and ctx.config.animation) or {}
+	local pan_cfg = (ctx.config and ctx.config.panels and ctx.config.panels[opts.name]) or {}
+	self.anim = opts.anim or pan_cfg.anim or anim_cfg.style or "auto"
+	if anim_cfg.enabled == false then
+		self.anim = "none"
+	end
+	self._anim_tau = math.max(30, (anim_cfg.duration_ms or 150) / 3)
+	self._anim_off = anim_cfg.distance or 40
+	self._anim_exit = anim_cfg.exit ~= false
 	self.pos = opts.pos
 	self.anchor_dir = nil
 	self.sx, self.sy = 0, 0
@@ -224,6 +236,7 @@ function Panel:rect(x, y, w, h, c)
 	self.ctx.L.surf_fill(self.surf, self.w, self.h, x, y, w, h, c)
 end
 function Panel:rrect(x, y, w, h, r, c)
+	r = Util.corner_r(self.ctx, r)
 	self.ctx.L.surf_rrect_aa(self.surf, self.w, self.h, x, y, w, h, r, c)
 end
 function Panel:text(x, y, str, fg)
@@ -384,7 +397,7 @@ function Panel:show_at(anchor_x, anchor_y, direction, align)
 	end
 	y = clamp(y, 8, ctx.scr_h - 8 - self.h)
 	self.sx, self.sy = x, y
-	self.last_anchor = { x = anchor_x, y = anchor_y, dir = self.anchor_dir }
+	self.last_anchor = { x = anchor_x, y = anchor_y, dir = self.anchor_dir, align = align }
 	self:_begin_show()
 end
 
@@ -399,16 +412,49 @@ function Panel:show_xy(x, y)
 	self:_begin_show()
 end
 
+-- cascade: shift a free-positioned panel diagonally until it no longer
+-- fully stacks on a visible panel (simultaneous panels stay readable)
+function Panel:avoid_overlap()
+	local ctx = self.ctx
+	local bx, by = self.sx, self.sy
+	for _ = 1, 24 do
+		local clash = false
+		for _, q in pairs(ctx._panels or {}) do
+			if q ~= self and q.name ~= "toast" and q.visible and not q.destroyed
+				and self.sx < q.sx + q.w and self.sx + self.w > q.sx
+				and self.sy < q.sy + q.h and self.sy + self.h > q.sy then
+				clash = true
+				break
+			end
+		end
+		if not clash then
+			return
+		end
+		bx = bx + 36
+		by = by + 28
+		self.sx = clamp(bx, 8, ctx.scr_w - 8 - self.w)
+		self.sy = clamp(by, 8, ctx.scr_h - 8 - self.h)
+	end
+end
+
 function Panel:show()
 	local ctx = self.ctx
 	self:refit()
 	self.anchor_dir = nil
 	self.pos = self.opts.pos
+	local pcfg = (ctx.config.panels or {})[self.name] or {}
+	if not self.user_pos and pcfg.pos == "auto" and self.last_anchor then
+		local a = self.last_anchor
+		return self:show_at(a.x, a.y, a.dir, a.align)
+	end
 	if self.user_pos then
 		self.sx = clamp(self.user_pos.x, 0, ctx.scr_w - self.w)
 		self.sy = clamp(self.user_pos.y, 0, ctx.scr_h - self.h)
 	else
 		self.sx, self.sy = self:layout_free()
+		if self.name ~= "toast" then
+			self:avoid_overlap()
+		end
 	end
 	self:_begin_show()
 end
@@ -431,7 +477,7 @@ function Panel:_begin_show()
 	self.tx, self.ty = self.sx, self.sy
 	local a = self:anim_dir()
 	if a ~= "none" then
-		local off = 40
+		local off = self._anim_off or 40
 		if a == "slide_down" then
 			self.anim_y = self.sy - off
 		elseif a == "slide_up" then
@@ -523,13 +569,13 @@ function Panel:hide(instant)
 	end
 	ctx.popup_visible = any
 	local a = self:anim_dir()
-	if instant or a == "none" then
+	if instant or not self._anim_exit or a == "none" then
 		self:_finish_hide()
 		return
 	end
 	self.animating = true
 	ctx._panel_closing = self
-	local off = 40
+	local off = self._anim_off or 40
 	if a == "slide_down" then
 		self.tx, self.ty = self.sx, self.sy - off
 	elseif a == "slide_up" then
@@ -570,7 +616,7 @@ function Panel:tick(dt)
 	if not self.animating then
 		return
 	end
-	local k = 1 - math.exp(-dt / 55)
+	local k = 1 - math.exp(-dt / (self._anim_tau or 55))
 	local function step(a, t)
 		local d = t - a
 		if math.abs(d) < 1.5 then

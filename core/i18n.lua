@@ -36,6 +36,7 @@ tables.zh = {
 	["music player"] = "音乐播放器",
 	["volume"] = "音量",
 	["UI Components"] = "UI 组件",
+	["UI demo"] = "UI 例子",
 	["Clock"] = "时钟",
 	["lbar"] = "lbar",
 	["wallpaper"] = "壁纸",
@@ -296,10 +297,6 @@ tables.zh = {
 
 	-- ---------------------------------------------------- color picker
 	["Copy"] = "复制",
-	["not picked"] = "未取色",
-	["nothing picked yet"] = "尚未取色",
-	["screen capture failed"] = "屏幕捕获失败",
-	["screen capture failed (install grim)"] = "屏幕捕获失败（请安装 grim）",
 
 	-- -------------------------------------------------- keybinds help
 	["no keybinds in config.lua"] = "config.lua 中暂无快捷键",
@@ -390,6 +387,7 @@ tables.zh = {
 	["padding"] = "内边距",
 	["gap"] = "间距",
 	["bar margin"] = "栏边距",
+	["corner style"] = "圆角风格",
 	["font path"] = "字体路径",
 	["font size"] = "字体大小",
 	["fallback fonts (;)"] = "回退字体 (;)",
@@ -451,6 +449,10 @@ tables.zh = {
 	["mode: %s"] = "模式：%s",
 	["auto reload on"] = "自动重载已开启",
 	["auto reload off"] = "自动重载已关闭",
+	["config reloaded"] = "配置已重载",
+	["font reloaded: %s"] = "字体已重载：%s",
+	["font reload failed: %s"] = "字体重载失败：%s",
+	["reload failed: %s"] = "重载失败：%s",
 
 	-- ------------------------------- keybinds_help groups (config-provided)
 	["system"] = "系统",
@@ -502,6 +504,7 @@ tables.zh = {
 	["no window to resize"] = "没有可调整的窗口",
 	["panel size reset"] = "面板已重置",
 	["no panel to reset"] = "没有可重置的面板",
+	["reset panel"] = "重置面板",
 	["move: %d px per press"] = "移动：每次 %d 像素",
 	["resize: %d px per press"] = "调整：每次 %d 像素",
 }

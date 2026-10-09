@@ -10,13 +10,16 @@ return {
     -- nord catppuccin_mocha catppuccin_latte tokyo_night tokyo_night_day
     -- solarized_dark solarized_light
     theme       = 'nord',
-    theme_light = 'catppuccin_latte',
+    theme_light = 'one_light',
     theme_mode  = 'dark',
+
+    -- corner style: 'round' (rounded buttons/cards/windows) | 'square'
+    corner     = 'round',
 
     -- UI language: 'auto' (detect from $LANG) | 'en' | 'zh'
     lang = 'zh',
 
-    font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    font_path = '/home/etcix/.local/share/fonts/FantasqueSansMNerdFontMono-Regular.ttf',
     font_size = 18,
     fallback_font_paths = {
         '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
@@ -32,7 +35,6 @@ return {
         'keybinds_help', 'launcher', 'clip_hist', 'pomodoro',
         'music_player', 'weather', 'sysinfo', 'sysmon',
         'color_picker', 'ui_demo', 'hide_all',
-        'move_window', 'resize_window',
         'settings', 'wallpaper', 'wifi',
     },
 
@@ -64,6 +66,18 @@ return {
         -- items = { 'lock', 'logout', 'sleep', 'reboot', 'poweroff' },
     },
 
+    -- popup window animations (PPT-style enter/exit slides).
+    -- style: 'auto' (pick from the panel's anchor/position) | 'slide_up' |
+    --        'slide_down' | 'slide_left' | 'slide_right' | 'none'
+    -- per-panel override: config.panels.<name>.anim wins over animation.style
+    animation = {
+        enabled     = true,
+        style       = 'auto',
+        duration_ms = 150,   -- enter/exit travel time
+        distance    = 40,    -- slide distance in px
+        exit        = true,  -- animate the exit too
+    },
+
     -- per-panel scope: dismiss_outside = false keeps the panel open when
     -- clicking outside it (outside clicks pass through to other apps)
     panel_opts = {
@@ -72,9 +86,9 @@ return {
         music_player = { dismiss_outside = true },
         color_picker = { dismiss_outside = true },
         sysinfo = { dismiss_outside = true },
-        settings = { dismiss_outside = true },
+        settings = { dismiss_outside = false },
         wallpaper = { dismiss_outside = true },
-        wifi = { dismiss_outside = true },
+        wifi = { dismiss_outside = false },
         battery = { dismiss_outside = true },
         volume = { dismiss_outside = true },
     },
@@ -152,22 +166,25 @@ return {
     },
 
     panels = {
-        clock          = { pos = 'center', anim = 'auto' },
-        volume         = { pos = 'center', anim = 'auto' },
+        -- per-panel entrance position: center/top/bottom/left/right/
+        -- top_left/top_right/bottom_left/bottom_right, or 'auto' to anchor
+        -- below the bar item; overlapping panels cascade automatically
+        clock          = { pos = 'top', anim = 'auto' },
+        volume         = { pos = 'bottom_right', anim = 'auto' },
         launcher       = { pos = 'top', anim = 'slide_down' },
-        clip_hist      = { pos = 'center', anim = 'auto' },
+        clip_hist      = { pos = 'top', anim = 'auto' },
         pomodoro       = { pos = 'bottom_right', anim = 'auto' },
         music_player   = { pos = 'center', anim = 'auto' },
         weather        = { pos = 'top_right', anim = 'auto' },
-        sysinfo        = { pos = 'center', anim = 'auto' },
+        sysinfo        = { pos = 'bottom_left', anim = 'auto' },
         sysmon         = { pos = 'center', anim = 'auto' },
-        color_picker   = { pos = 'center', anim = 'auto' },
+        color_picker   = { pos = 'right', anim = 'auto' },
         ui_demo        = { pos = 'center', anim = 'auto' },
-        keybinds_help  = { pos = 'center', anim = 'auto' },
+        keybinds_help  = { pos = 'left', anim = 'auto' },
         settings       = { pos = 'center', anim = 'auto' },
         wallpaper      = { pos = 'center', anim = 'auto' },
         wifi           = { pos = 'top_right', anim = 'auto' },
-        battery        = { pos = 'top_left', anim = 'auto' },
+        battery        = { pos = 'top_right', anim = 'auto' },
     },
 
     pomodoro = {
@@ -201,6 +218,7 @@ return {
         refresh_sec = 900,
     },
 
+    -- ui_demo 'windows' tab: window move/resize steps (px per click)
     move_window = {
         step = 30,
         mode = 'auto_float',

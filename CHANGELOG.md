@@ -400,6 +400,64 @@ clock picker 离线测试（三视图绘制/年份往返/转盘 14→25→内圈
 
 ---
 
+## 97. ctrl+alt+d toggle 修复 + 恢复原位 + 动画配置化 + sysmon 搜索框重排
+
+### (a) ctrl+alt+d 只藏不恢复的根因（lbar.lua）
+toast 面板本身是一个可见面板：按下 hide 后弹出 "panels hidden" toast，再按一次时 `any=true`（toast 可见）→ 又走隐藏分支把 toast 藏掉，永远到不了恢复分支。修复：hide_all_windows 统计可见面板时排除 toast。恢复路径重写为 show_restored()（toggle_panel 复用）：优先 user_pos（拖拽位）、其次 last_anchor（bar 锚点 + align="left" 左对齐，last_anchor 现在记录 align）、否则 config 位置——恢复后不再跑到屏幕中央。
+### (b) 窗口动画配置化（core/panel.lua + config.lua + docs/config.md）
+config.lua 新增全局 animation 节（enabled/style/duration_ms/distance/exit）；Panel 初始化读取 config.animation（master enabled=false 即全部即时显隐），per-panel `panels.<name>.anim` 覆盖全局 style，插件 opts.anim 最高优先——此前 config 里的 anim 键完全没被读取。入场滑距/时长/出场动画统一由配置驱动（exp 缓动 tau=duration_ms/3），exit=false 可关出场。文档补 Window animations 节。
+### (c) sysmon 搜索框移出 header 独立成行（plugins/sysmon.lua）
+长文本原来在 header 带内向下生长、盖住标题和内容。改为 header 下独立整行（SEARCH_ROW=lh+8 计入 FIXED_H），长文本换行时输入框向下生长、内容整体下移（in_extra），自然尺寸面板经 Panel:fit 同步长高、user_size 面板列表收缩——即输入长文本触发布局重排（autofit）。
+### (d) PATH 规范化（lbar.lua）
+合成器 spawn 的会话可能带最小 PATH，导致 `command -v zenity` 之类探测失败（file_dialog 落入内置对话框）。启动时用 setenv 确保 /usr/local/bin:/usr/bin:/bin 存在（缺失才追加并打日志），zenity/pactl/nmcli/swww/grim 等全部受益。
+### 验证
+重建离线测试（/tmp 测试文件被系统清理后重写）：/tmp/test_multipanel2.lua（fake L + step 队列驱动真 lbar.lua，17 断言——多面板同显、toggle 藏/恢复、bar 锚点/左对齐/拖拽位三种恢复、toast 不再劫持 toggle 分支）ALL PASS；/tmp/test_sysmon2.lua（9 断言——搜索框独立行、整宽、in_extra 生长位移、自然高含 SEARCH_ROW）ALL PASS；30 文件语法过；i18n 338 键 0 缺失。
+
+---
+
+## 98. 全局圆角/直角模式（config.corner）
+
+### (a) 问题根源：字体行高驱动几何
+UI 几何全部从行高 lh 推导（row_h=max(46,lh+28)、按钮/滑条/开关药丸 r=h/2、卡片 CARD_R=14），换大行高字体后所有圆角随行高等比放大——"改个字体风格大变"。新增全局 corner 模式统一收口。
+### (b) 输入框视口跟随光标（core/text_input.lua）
+wrap 输入到达 max_lines 后高度封顶、改为 scroll_line 纵向滚动，但打字路径（on_key text → _insert）从不调用 _ensure_cursor_visible——继续输入时光标滚出视口，最后输入的字符不可见。修复：_emit_change 统一调用 _ensure_cursor_visible（所有内容变更路径——打字/粘贴/IME 提交/退格/删除/set_value——单点覆盖）；同时去掉 on_key 导航键的 if self.wrap 门控，单行模式的水平 scroll_x 跟随（Left/Right/Home/End/BackSpace/Delete）同样恢复（该分支一直存在但从未被单行路径触达）。_ensure_cursor_visible 加 text_w 空守卫（set_rect 之前调用安全）。
+### (c) 实现（core/util.lua + core/panel.lua + core/bar.lua + core/text_input.lua + config.lua + plugins/settings.lua + core/i18n.lua + docs/config.md）
+config.lua 新增 `corner = 'round'`（'round' | 'square'）。Util.corner_r(ctx, r)：corner=="square" 时返回 0。三个拦截点全覆盖：Panel:rrect（ui.lua 全部控件圆角经此流出——按钮、滑条、开关、chip、卡片）、Panel.new self.radius（popup_create 窗口圆角）、bar.lua 三处（Bar:rrect + bar 背景 pill + item hover pill）。settings 面板 Options 新增 样式 组 → corner style enum（round/square），切换走 hot_reload——窗口圆角在 popup_create 时固定无法运行时修改，热重载重建全部面板保持风格统一；i18n 加 "corner style"（zh 圆角风格）。
+### 验证
+7 文件语法过；corner_r 离线断言（square→0 / round 保留 / 缺省保留 / nil ctx 安全）PASS；TI 滚动回归 /tmp/test_ti_scroll.lua（wrap 打字超 max_lines 光标行留在视口内、删除回滚、单行打字/导航 scroll_x 跟随）+ 内联 fuzz 3000 迭代（随机键 + 垃圾 UTF-8 + 随机 set_rect/set_value）0 错误；test_multipanel2（17）+ test_sysmon2（9）回归 ALL PASS；i18n_check 341 键 0 缺失。
+
+---
+
+## 99. 面板内 HSV 取色器 + 热重载修复 + ui_demo 合并 move/resize + 分段控件统一
+
+### (a) 取色器重构为面板内绘画板（plugins/color_picker.lua）
+废弃截图/全屏采样方案，改为面板内 HSV 绘画板：SV 方块逐像素渲染（ffi uint32_t 缓存 + ffi.copy 逐行 memcpy，color(x,y)=v_y*(s_x*hue+(1-s_x)*white)）+ 色相竖条（同样缓存）+ 预览卡 + HEX/RGB/HSV 三个 tonal chip 点击复制；方块/色相条支持拖拽拾色、色相条滚轮 ±4°、光标环（外白内黑）+ 像素回贴 clamp 防越界；ESC 关闭。X11/Wayland 双后端一致（不再冻结全屏）。
+### (b) 热重载 font_path 无效修复（core/util.lua + lbar.lua）
+根因一：watcher 依赖秒级 mtime 粒度，快速连续修改同秒内 mtime 不变漏检——file_mtime 改 `stat -c %.9Y` 纳秒精度（注意 %9Y 是 stat 格式符，Lua string.format 需 `%%` 转义为 `%%.9Y`）。根因二：reload 全程无反馈，失败静默——reload_all 统一收口：font_changed 检测（font_path/font_size/fallback）后重建，末尾 toast「font reloaded / font reload failed / config reloaded」（必须在 L.lbar_open 之后发，旧 Lctx freed 后建 toast panel 会挂死 ctx）；watcher 崩溃路径补 "reload failed: %s" toast。
+### (c) move/resize 并入 ui_demo（plugins/ui_demo.lua；删除 move_window.lua / resize_window.lua）
+两插件面板并入 ui_demo 新 "windows" tab（移动十字键/缩放十字键/步长 reset），bar item 标题改「UI demo」（zh「UI 例子」）；config.lua plugins 删除两项；window ops 全函数组迁移，步长读 config.move_window.step / config.resize_window.step。
+### (d) 分段控件统一 UI:segmented（core/ui.lua + settings/pomodoro/ui_demo）
+新增共享分段控件 UI:segmented(x,y,w,h,items,active_idx)→点击索引（0=无）：MIUI 胶囊容器（surface_hi）+ raised 段（bg pill + primary 文本）+ hint 未选文本。settings 主题 tab、pomodoro focus/break 模式、ui_demo 四 tab 全部替换（原各自手绘/id_button 风格不一）。输入框（text_field）、按钮（id_button filled/tonal/text）、开关（toggle）此前后已统一，本轮收口分段类控件。
+### 验证
+4 文件语法过；i18n_check 320 键 0 缺失；test_multipanel2（17）+ test_sysmon2（9）+ test_font_hotreload（12）回归 ALL PASS。
+
+---
+
+## 100. Wayland 外部点击隐藏 + 每面板入场位置 + 级联避让 + config DSL 审计
+
+### (a) Wayland 点击外部隐藏修复（src/backends.c + core/init.lua + lbar.lua）
+根因：`lbar_ptr_grab` 是 X11 专属（Wayland 直接 return -1），Wayland 下面板外的按下事件被合成器投递给下层应用，lbar 永远收不到 → `dismiss_outside_panels()` 从未触发。修复：新增全屏透明捕获面（TOP 层，面板在 OVERLAY 之下、输入区域用 wl_region 挖掉 bar 条——同层后映射会盖住 bar），有任一 dismissable 面板可见时经 `lbar_outside_catch(c, 1)` 映射、全部关闭时销毁；捕获面收到的按下/释放事件以 lua target=2 推给 Lua（motion/axis/enter 丢弃），按下即 `dismiss_outside_panels()`，吞掉该次点击——与 X11 grab 语义一致。sync_ptr_grab 在 Wayland 分支改为同步捕获面开关（保留旧函数名，X11 grab 不变）；调用点带 `L.lbar_outside_catch` 存在性守卫（兼容旧 lbar.so / fake L 测试桩）。
+### (b) 每面板入场位置生效（lbar.lua + core/util.lua + core/panel.lua + config.lua + plugins/settings.lua）
+`panels.<name>.pos` 之前只在没有 bar 锚点时才用（bar 点击/last_anchor 恢复都会覆盖），Panels 标签设的位置基本无效。新优先级：user_pos（拖拽）> 配置 pos（非 'auto'）> last_anchor（bar 锚点）> center。toggle_from_bar/show_restored 同步该优先级；pos='auto' 表示锚定 bar（新增选项，POS_CHOICES 补 left/right/auto，共 10 档）；Panel:show 的 'auto' 面板优先复用 last_anchor。pos 改动即时生效（下次打开应用），去掉「需重载生效」toast；dismiss_outside 切换后立即 sync_ptr_grab。config.lua 默认位置分散（clock/launcher→top、weather/wifi→top_right、battery→top_left、sysinfo→bottom_left、volume/pomodoro→bottom_right、clip_hist/keybinds_help→left、color_picker→right）。
+### (c) 级联避让（core/panel.lua Panel:avoid_overlap）
+自由定位的面板（非 user_pos/非 toast）落下前检查与所有可见面板的矩形相交，相交则对角步进（+36,+28，clamp 屏内）最多 24 次直到无碰撞——多面板同显不再完全重叠。
+### (d) config DSL 审计
+全键扫描（33 顶层键）：bar_margin/height/padding/gap 经 core/bar.lua `cfg.` 别名消费，theme/theme_light 经 Theme.build，其余均被 reload_all 重建路径覆盖（bar/panels/plugins/theme/I18n/keybinds 全部重建）；move_window/resize_window 顶层节由 ui_demo windows tab 消费（补注释说明）。无发现失效键。
+### 验证
+make 全量编译过（6 文件）；test_multipanel2 更新为 19 断言（A auto→锚点恢复、B bottom_right→配置位恢复、catcher 开/关、级联避让偏移 (1098,664)）+ test_sysmon2（9）+ test_font_hotreload（12）ALL PASS；i18n 319 键 0 缺失；docs/config.md 补 pos='auto'/级联/捕获面说明。
+
+---
+
 ## 迁移说明
 
 本文件于 2026-10-08 由项目历史 TODO 日志（第 1–90 条，按时间从旧到新）迁移整理而成，原 TODO 文件已删除。

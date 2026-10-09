@@ -84,24 +84,11 @@ local function do_draw(p)
 	end
 	y = y + m.HERO_H + m.ROW_GAP
 
-	-- segmented mode control: MIUI pill container, raised active segment
-	local seg_h = m.SEG_H
-	p:rrect(PAD, y, card_w, seg_h, math.floor(seg_h / 2), T.surface_hi)
-	local segs = { { "focus", I.t(L_FOCUS) }, { "break", I.t(L_BREAK) } }
-	local seg_w = math.floor(card_w / 2)
-	for i, sg in ipairs(segs) do
-		local sx = PAD + (i - 1) * seg_w
-		local sw = i == #segs and (card_w - seg_w * (#segs - 1)) or seg_w
-		local active = M.mode == sg[1]
-		if active then
-			p:rrect(sx + 3, y + 3, sw - 6, seg_h - 6, math.floor((seg_h - 6) / 2), T.bg)
-		end
-		local stw = tw(sg[2])
-		p:text(sx + math.floor((sw - stw) / 2), y + math.floor((seg_h - lh) / 2), sg[2],
-			active and T.primary or T.hint)
-		if ui:clicked(sx, y, sw, seg_h) then
-			M.set_mode(sg[1])
-		end
+	-- segmented mode control: shared MIUI segmented widget
+	local sel = ui:segmented(PAD, y, card_w, m.SEG_H,
+		{ I.t(L_FOCUS), I.t(L_BREAK) }, M.mode == "focus" and 1 or 2)
+	if sel > 0 then
+		M.set_mode(sel == 1 and "focus" or "break")
 	end
 
 	-- footer: opaque band covers content scrolled past the bottom; pill

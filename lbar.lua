@@ -37,6 +37,26 @@ end
 package.path = SCRIPT_DIR .. "/?.lua;" .. package.path
 package.cpath = SCRIPT_DIR .. "/?.so;" .. package.cpath
 
+-- compositor-spawned sessions can carry a minimal PATH; make sure the
+-- standard system dirs are present so tool probes (zenity, pactl, nmcli,
+-- swww, grim…) resolve the same way they do from a user shell
+do
+	local ffi0 = require("ffi")
+	local path = os.getenv("PATH") or ""
+	local dirs = ":" .. path .. ":"
+	local add = {}
+	for _, d in ipairs({ "/usr/local/bin", "/usr/bin", "/bin" }) do
+		if not dirs:find(":" .. d .. ":", 1, true) then
+			add[#add + 1] = d
+		end
+	end
+	if #add > 0 then
+		ffi0.cdef("int setenv(const char *name, const char *value, int overwrite);")
+		ffi0.C.setenv("PATH", table.concat(add, ":") .. ":" .. path, 1)
+		print("[lbar] PATH extended with: " .. table.concat(add, ":"))
+	end
+end
+
 local init = require("core.init")(SCRIPT_DIR)
 local Bar = require("core.bar")
 local PluginMgr = require("core.plugins")
@@ -192,11 +212,22 @@ function ctx.sync_kbd()
 	end
 end
 
--- X11 only: one pointer grab is needed so presses outside every panel are
--- still delivered (dismiss-on-outside-click). on wayland the compositor
--- routes pointer events natively, so this is a no-op there.
+-- X11: one pointer grab delivers presses outside every panel (dismiss-on-
+-- outside-click). wayland: an equivalent full-screen catcher surface is
+-- toggled on the C side while any dismissable panel is visible.
 function ctx.sync_ptr_grab()
+	local on = false
 	if ctx.backend_kind == "wayland" then
+		for _, q in pairs(panels) do
+			if q.visible and not q.destroyed and q.opts.ptr_grab ~= false then
+				on = true
+				break
+			end
+		end
+		-- guard: tolerate a stale lbar.so built before the catcher existed
+		if ctx.L.lbar_outside_catch then
+			ctx.L.lbar_outside_catch(Lctx, on and 1 or 0)
+		end
 		return
 	end
 	local holder = nil
@@ -246,6 +277,31 @@ function ctx.show_panel(name, anchor_x, anchor_y, direction, align)
 	end
 end
 
+-- reopen a panel keeping how it was shown before: user-dragged position,
+-- the configured free position (panels.<name>.pos, set in the Panels tab),
+-- bar anchor (with left-align), or the center fallback
+local function show_restored(name)
+	local p = panels[name]
+	if not p or p.destroyed then
+		return
+	end
+	if p.user_pos then
+		ctx.show_panel(name)
+		return
+	end
+	local pcfg = ctx.config.panels and ctx.config.panels[name] or nil
+	if pcfg and pcfg.pos and pcfg.pos ~= "auto" then
+		ctx.show_panel(name)
+		return
+	end
+	if p.last_anchor then
+		local a = p.last_anchor
+		ctx.show_panel(name, a.x, a.y, a.dir, a.align)
+	else
+		ctx.show_panel(name)
+	end
+end
+
 function ctx.toggle_panel(name)
 	local p = panels[name]
 	if not p then
@@ -255,16 +311,7 @@ function ctx.toggle_panel(name)
 		ctx.show_panel(name)
 		return
 	end
-	if p.user_pos then
-		ctx.show_panel(name)
-		return
-	end
-	local a = p.last_anchor
-	if a then
-		ctx.show_panel(name, a.x, a.y, a.dir)
-	else
-		ctx.show_panel(name)
-	end
+	show_restored(name)
 end
 
 function ctx.close_panels()
@@ -325,6 +372,7 @@ local function reload_all()
 	local ok, newcfg = pcall(dofile, CONFIG_PATH)
 	if not ok or type(newcfg) ~= "table" then
 		log("config reload failed: %s", tostring(newcfg))
+		ctx.notify(I18n.t("config reload failed: %s", tostring(newcfg)), { style = "error" })
 		return
 	end
 	newcfg = normalize(newcfg)
@@ -357,15 +405,20 @@ local function reload_all()
 	I18n.init(ctx)
 	theme_dark = (config.theme_mode or "dark") ~= "light"
 
+	-- toasts are emitted after the backend reopen: a toast panel created
+	-- before lbar_close would hold a popup id from the freed ctx
+	local font_ok, font_err
 	if font_changed then
 		local ok_f, nf = pcall(load_font, config)
 		if ok_f and nf then
 			L.xft_done(ft_ctx)
 			ft_ctx = nf
 			ctx.ft_ctx = nf
+			font_ok = true
 			log("font reloaded: %s @ %d", config.font_path, config.font_size or 14)
 		else
-			log("font reload failed: %s", tostring(nf))
+			font_err = tostring(nf)
+			log("font reload failed: %s", font_err)
 		end
 	end
 
@@ -396,6 +449,17 @@ local function reload_all()
 
 	wpaths = watch_paths(config)
 	wmtimes = PluginMgr.snapshot_mtimes(wpaths)
+	-- a reload resynced the mtimes already; a leftover skip flag from the
+	-- settings writer must not swallow the next watcher cycle
+	ctx.skip_reload_once = false
+	if font_ok then
+		ctx.notify(I18n.t("font reloaded: %s", config.font_path:match("[^/]+$") or config.font_path),
+			{ style = "success" })
+	elseif font_err then
+		ctx.notify(I18n.t("font reload failed: %s", config.font_path), { style = "error" })
+	else
+		ctx.notify(I18n.t("config reloaded"), { style = "success" })
+	end
 	log("hot reload done: %s @ %s h=%d plugins=%d", kind, bar.pos, bar.h, #bar.plugins)
 end
 
@@ -409,10 +473,13 @@ end
 -- visible when they were hidden)
 local hidden_restore = nil
 actions.hide_all_windows = function()
+	-- the toast panel itself must not count: the "panels hidden" toast is
+	-- visible right after hiding, and counting it made the second press take
+	-- the hide branch again (toggle never reached the restore side)
 	local any = false
 	local names = {}
 	for name, p in pairs(panels) do
-		if p.visible and not p.destroyed then
+		if name ~= "toast" and p.visible and not p.destroyed then
 			any = true
 			names[#names + 1] = name
 		end
@@ -427,7 +494,7 @@ actions.hide_all_windows = function()
 			return
 		end
 		for _, name in ipairs(hidden_restore) do
-			ctx.show_panel(name)
+			show_restored(name)
 		end
 		hidden_restore = nil
 		ctx.notify(I18n.t("panels shown"), { style = "info" })
@@ -681,7 +748,12 @@ while true do
 				bar:on_motion(ev.x, ev.y)
 			end
 		elseif t == 2 then
-			if tgt == 1 then
+			if tgt == 2 then
+				-- wayland catcher surface: press outside every panel
+				if ev.button ~= 4 and ev.button ~= 5 then
+					dismiss_outside_panels()
+				end
+			elseif tgt == 1 then
 				local p = route_panel(ev, "press")
 				if p and not p.destroyed then
 					local lx, ly = local_coords(p)
@@ -791,8 +863,10 @@ while true do
 					local ok_r, rerr = pcall(reload_all)
 					if not ok_r then
 						log("hot reload crashed, keeping old state: %s", tostring(rerr))
+						ctx.notify(I18n.t("reload failed: %s", tostring(rerr)), { style = "error" })
 					end
 					wmtimes = PluginMgr.snapshot_mtimes(wpaths)
+					ctx.skip_reload_once = false
 				end
 			end
 		end
