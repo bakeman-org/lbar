@@ -14,6 +14,8 @@
 
 static FT_Library g_lib = 0;
 
+static void sc_clear(void); /* shaping cache, defined below */
+
 typedef struct {
   FT_Face primary;
   FT_Face fallback[MAX_FALLBACKS];
@@ -41,6 +43,7 @@ static void set_size_or_select(FT_Face face, int size) {
 }
 
 void *xft_load(const char *primary_path, int size, const char *fallback_paths) {
+  sc_clear(); /* face pointers may change: cached runs would dangle */
   XftCtx *ctx = (XftCtx *)calloc(1, sizeof(XftCtx));
   if (!ctx)
     return 0;
@@ -74,6 +77,7 @@ void *xft_load(const char *primary_path, int size, const char *fallback_paths) {
 }
 
 void xft_done(void *ptr) {
+  sc_clear();
   if (!ptr)
     return;
   XftCtx *ctx = (XftCtx *)ptr;
@@ -162,14 +166,140 @@ int xft_primary_line_height(void *ptr) {
   return h;
 }
 
-static void shape_run(FT_Face face, const unsigned char *start, size_t len,
-                      hb_buffer_t *buf) {
-  hb_buffer_clear_contents(buf);
-  hb_buffer_add_utf8(buf, (const char *)start, (int)len, 0, (int)len);
-  hb_buffer_guess_segment_properties(buf);
-  hb_font_t *hf = hb_ft_font_create_referenced(face);
-  hb_shape(hf, buf, NULL, 0);
-  hb_font_destroy(hf);
+/* ── Shaping cache ──────────────────────────────────────────
+   Every text run was re-shaped (hb_ft_font_create_referenced + hb_shape)
+   on every redraw, and a full-screen panel can redraw many rows a frame.
+   The result for a given (face, bytes) pair is deterministic, so memoise
+   it: glyph ids + per-glyph advance/offset. This removes the dominant
+   per-frame cost in text-heavy panels. Cleared on font (re)load. */
+#define SC_SLOTS 4096
+#define SC_PROBE 16
+
+typedef struct {
+  uint64_t hash;
+  FT_Face face;
+  char *text;
+  int len;
+  unsigned int n;
+  uint32_t *cp;   /* n glyph ids */
+  int32_t *pos;   /* 4*n: x_advance, y_advance, x_offset, y_offset */
+} shape_entry_t;
+
+typedef struct {
+  unsigned int n;
+  uint32_t *cp;
+  int32_t *pos;
+} shaped_run_t;
+
+static shape_entry_t g_sc[SC_SLOTS];
+static unsigned int g_sc_used = 0;
+
+static void sc_clear(void) {
+  for (int i = 0; i < SC_SLOTS; i++) {
+    free(g_sc[i].text);
+    free(g_sc[i].cp);
+    free(g_sc[i].pos);
+    g_sc[i].text = NULL;
+    g_sc[i].cp = NULL;
+    g_sc[i].pos = NULL;
+    g_sc[i].hash = 0;
+    g_sc[i].len = 0;
+    g_sc[i].n = 0;
+  }
+  g_sc_used = 0;
+}
+
+static uint64_t sc_hash(FT_Face face, const unsigned char *s, size_t len) {
+  uint64_t h = 1469598103934665603ULL;
+  for (size_t i = 0; i < len; i++) {
+    h ^= s[i];
+    h *= 1099511628211ULL;
+  }
+  h ^= (uint64_t)(uintptr_t)face;
+  h *= 1099511628211ULL;
+  h ^= (uint64_t)len + 1;
+  return h ? h : 1;
+}
+
+/* Returns the shaped run for (face, bytes), shaping & storing it on miss. */
+static void shape_run_cached(FT_Face face, const unsigned char *start,
+                             size_t len, shaped_run_t *out) {
+  out->n = 0;
+  out->cp = NULL;
+  out->pos = NULL;
+  if (len == 0)
+    return;
+
+  uint64_t h = sc_hash(face, start, len);
+  int slot = -1, first_empty = -1;
+  for (int i = 0; i < SC_PROBE; i++) {
+    int idx = (int)((h + (uint64_t)i) & (SC_SLOTS - 1));
+    shape_entry_t *e = &g_sc[idx];
+    if (e->hash == 0) {
+      if (first_empty < 0)
+        first_empty = idx;
+      break;
+    }
+    if (e->hash == h && e->face == face && e->len == (int)len &&
+        memcmp(e->text, start, len) == 0) {
+      slot = idx;
+      break;
+    }
+  }
+
+  if (slot < 0) {
+    /* shape it */
+    hb_buffer_t *buf = hb_buffer_create();
+    hb_buffer_add_utf8(buf, (const char *)start, (int)len, 0, (int)len);
+    hb_buffer_guess_segment_properties(buf);
+    hb_font_t *hf = hb_ft_font_create_referenced(face);
+    hb_shape(hf, buf, NULL, 0);
+    hb_font_destroy(hf);
+
+    unsigned int gc = 0;
+    hb_glyph_info_t *info = hb_buffer_get_glyph_infos(buf, &gc);
+    hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(buf, &gc);
+
+    if (first_empty < 0 || g_sc_used >= SC_SLOTS - SC_PROBE) {
+      sc_clear();
+      first_empty = (int)(h & (SC_SLOTS - 1));
+    }
+    shape_entry_t *e = &g_sc[first_empty];
+    e->hash = h;
+    e->face = face;
+    e->len = (int)len;
+    e->text = (char *)malloc(len);
+    e->cp = gc ? (uint32_t *)malloc(sizeof(uint32_t) * gc) : NULL;
+    e->pos = gc ? (int32_t *)malloc(sizeof(int32_t) * 4 * gc) : NULL;
+    if (!e->text || (gc && (!e->cp || !e->pos))) {
+      free(e->text);
+      free(e->cp);
+      free(e->pos);
+      e->text = NULL;
+      e->cp = NULL;
+      e->pos = NULL;
+      e->hash = 0;
+      hb_buffer_destroy(buf);
+      return;
+    }
+    memcpy(e->text, start, len);
+    e->n = gc;
+    g_sc_used++;
+    for (unsigned int i = 0; i < gc; i++) {
+      e->cp[i] = info[i].codepoint;
+      e->pos[i * 4 + 0] = pos[i].x_advance;
+      e->pos[i * 4 + 1] = pos[i].y_advance;
+      e->pos[i * 4 + 2] = pos[i].x_offset;
+      e->pos[i * 4 + 3] = pos[i].y_offset;
+    }
+    hb_buffer_destroy(buf);
+    slot = first_empty;
+  }
+
+  shape_entry_t *e = &g_sc[slot];
+  out->n = e->n;
+  out->cp = e->cp;
+  out->pos = e->pos;
 }
 
 void xft_text_extent(void *ptr, const char *text, int *w_out, int *h_out) {
@@ -177,7 +307,6 @@ void xft_text_extent(void *ptr, const char *text, int *w_out, int *h_out) {
   int max_w = 0, total_h = 0;
   int lh = xft_line_height(ptr);
   const char *ls = text;
-  hb_buffer_t *buf = hb_buffer_create();
 
   while (1) {
     const char *le = strchr(ls, '\n');
@@ -199,11 +328,10 @@ void xft_text_extent(void *ptr, const char *text, int *w_out, int *h_out) {
           q += n2;
         }
         double sc = face_scale(run_face, ctx->size);
-        shape_run(run_face, p, (size_t)(q - p), buf);
-        unsigned int gc = 0;
-        hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(buf, &gc);
-        for (unsigned int i = 0; i < gc; i++)
-          lw += (int)((pos[i].x_advance >> 6) * sc);
+        shaped_run_t sr;
+        shape_run_cached(run_face, p, (size_t)(q - p), &sr);
+        for (unsigned int i = 0; i < sr.n; i++)
+          lw += (int)((sr.pos[i * 4] >> 6) * sc);
         p = q;
       }
       if (lw > max_w)
@@ -214,7 +342,6 @@ void xft_text_extent(void *ptr, const char *text, int *w_out, int *h_out) {
       break;
     ls = le + 1;
   }
-  hb_buffer_destroy(buf);
   *w_out = max_w;
   *h_out = total_h;
 }
@@ -360,7 +487,6 @@ void xft_draw(void *ptr, Display *dpy, Drawable d, GC gc, int x, int y,
 
   int pen_y = pad_top + (int)(ctx->primary->size->metrics.ascender >> 6);
   const char *ls = text;
-  hb_buffer_t *hb_buf = hb_buffer_create();
 
   while (1) {
     const char *le = strchr(ls, '\n');
@@ -386,17 +512,13 @@ void xft_draw(void *ptr, Display *dpy, Drawable d, GC gc, int x, int y,
         size_t run_len = (size_t)(q - p);
         double sc = face_scale(run_face, ctx->size);
 
-        shape_run(run_face, p, run_len, hb_buf);
-        unsigned int gc2;
-        hb_glyph_info_t *info = hb_buffer_get_glyph_infos(hb_buf, &gc2);
-        hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(hb_buf, &gc2);
-
-        for (unsigned int i = 0; i < gc2; i++) {
-          int gx = (int)(pen_x + (pos[i].x_offset >> 6) * sc);
-          int gy = pen_y + (int)((pos[i].y_offset >> 6) * sc);
-          rasterize_glyph(buf, img_w, img_h, run_face, info[i].codepoint, gx,
-                          gy, fg, sc);
-          pen_x += (pos[i].x_advance >> 6) * sc;
+        shaped_run_t sr;
+        shape_run_cached(run_face, p, run_len, &sr);
+        for (unsigned int i = 0; i < sr.n; i++) {
+          int gx = (int)(pen_x + (sr.pos[i * 4 + 2] >> 6) * sc);
+          int gy = pen_y + (int)((sr.pos[i * 4 + 3] >> 6) * sc);
+          rasterize_glyph(buf, img_w, img_h, run_face, sr.cp[i], gx, gy, fg, sc);
+          pen_x += (sr.pos[i * 4] >> 6) * sc;
         }
         p = q;
       }
@@ -407,7 +529,6 @@ void xft_draw(void *ptr, Display *dpy, Drawable d, GC gc, int x, int y,
     pen_y += lh + 4;
     ls = le + 1;
   }
-  hb_buffer_destroy(hb_buf);
 
   int scr = DefaultScreen(dpy);
   Visual *visual = DefaultVisual(dpy, scr);
@@ -548,7 +669,6 @@ void xft_draw_rgba(void *ptr, uint32_t *buf, int bw, int bh, int x, int y,
   XftCtx *ctx = (XftCtx *)ptr;
   int lh = xft_line_height(ptr);
   const char *ls = text;
-  hb_buffer_t *hb_buf = hb_buffer_create();
 
   int baseline = y + (int)(ctx->primary->size->metrics.ascender >> 6);
 
@@ -572,16 +692,13 @@ void xft_draw_rgba(void *ptr, uint32_t *buf, int bw, int bh, int x, int y,
           q += n2;
         }
         double sc = face_scale(run_face, ctx->size);
-        shape_run(run_face, p, (size_t)(q - p), hb_buf);
-        unsigned int gc2;
-        hb_glyph_info_t *info = hb_buffer_get_glyph_infos(hb_buf, &gc2);
-        hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(hb_buf, &gc2);
-        for (unsigned int i = 0; i < gc2; i++) {
-          int gx = (int)(pen_x + (pos[i].x_offset >> 6) * sc);
-          int gy = baseline + (int)((pos[i].y_offset >> 6) * sc);
-          rasterize_glyph(buf, bw, bh, run_face, info[i].codepoint, gx, gy, fg,
-                          sc);
-          pen_x += (pos[i].x_advance >> 6) * sc;
+        shaped_run_t sr;
+        shape_run_cached(run_face, p, (size_t)(q - p), &sr);
+        for (unsigned int i = 0; i < sr.n; i++) {
+          int gx = (int)(pen_x + (sr.pos[i * 4 + 2] >> 6) * sc);
+          int gy = baseline + (int)((sr.pos[i * 4 + 3] >> 6) * sc);
+          rasterize_glyph(buf, bw, bh, run_face, sr.cp[i], gx, gy, fg, sc);
+          pen_x += (sr.pos[i * 4] >> 6) * sc;
         }
         p = q;
       }
@@ -591,7 +708,6 @@ void xft_draw_rgba(void *ptr, uint32_t *buf, int bw, int bh, int x, int y,
     baseline += lh + 4;
     ls = le + 1;
   }
-  hb_buffer_destroy(hb_buf);
 }
 
 /* Attach a caller-owned buffer to an XImage, freeing X's internal one.

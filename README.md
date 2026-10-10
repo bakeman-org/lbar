@@ -6,14 +6,15 @@ LuaJIT + C 实现的轻量状态栏 / 面板套件，同时支持 **X11** 与 **
 ## 特性
 
 - 栏 + 多面板并存：面板可拖拽、自适应尺寸、入场/出场动画、点击外部关闭（可按面板配置）
-- 21 个内置插件：启动器、剪贴板历史、工作区、CPU/内存/进程监控、系统信息、
+- 22 个内置插件：启动器、剪贴板历史、工作区、CPU/内存/进程监控、系统信息、
   时钟 + 日程、番茄钟、音乐播放器、天气、wifi、音量、电池 + 电源菜单、
-  壁纸选择器、取色器、UI 组件示例、设置面板等
+  系统托盘（XEmbed）、壁纸选择器、取色器、UI 组件示例、设置面板等
 - 14 套内置主题，深/浅色一键切换，全局圆角/直角风格
 - 完整中文/英文国际化（`I.t()` 单一入口，根据 `$LANG` 自动检测）
 - Wayland 原生支持：layer-shell、zwp_text_input_v3 输入法、IPC 全局快捷键；
   niri/hyprland/sway 均覆盖
 - X11 性能：MIT-SHM 零拷贝渲染上传、事件合并，拖拽/多面板流畅
+- 系统托盘：XEmbed 协议（X11 应用 / Wine / Java / 旧版 Qt、GTK），图标直接内嵌栏中
 
 ## 构建与运行
 
@@ -71,8 +72,17 @@ core/
   wm/             # 合成器适配（hyprland/niri/sway）
 plugins/          # 每个插件一个文件，独立可装卸
 docs/config.md    # config.lua 完整配置说明（中文）
-tools/            # lbar-cli（IPC 快捷键）、i18n 检查脚本
+tools/            # lbar-cli（IPC 快捷键）、i18n 检查脚本、插件全量测试
 ```
+
+无头环境下的插件冒烟测试（加载全部插件跑完整生命周期，不连接显示服务）：
+
+```sh
+luajit tools/plugin_test.lua          # 全部插件
+luajit tools/plugin_test.lua clock cpu
+```
+
+`tools/i18n_check.lua` 检查所有 `I.t()` 键的中文翻译是否缺失。
 
 ## 配置
 

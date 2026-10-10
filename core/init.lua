@@ -54,6 +54,14 @@ return function(SCRIPT_DIR)
     int lbar_ti_disable(lbar_ctx *c);
     int lbar_ti_set_cursor(lbar_ctx *c, int x, int y, int w, int h);
 
+    int  lbar_tray_init(lbar_ctx *c, int icon_size, int bg_rgb);
+    int  lbar_tray_available(lbar_ctx *c);
+    int  lbar_tray_count(lbar_ctx *c);
+    int  lbar_tray_layout(lbar_ctx *c, int x, int y, int ox, int oy, int icon_size, int gap);
+    int  lbar_tray_blit(lbar_ctx *c, uint32_t *dst, int dst_w, int dst_h);
+    int  lbar_tray_click(lbar_ctx *c, int lx, int ly, int btn);
+    void lbar_tray_shutdown(lbar_ctx *c);
+
     int  lbar_poll(lbar_ctx *c, int timeout_ms);
     int  lbar_next_event(lbar_ctx *c, lbar_event_t *out);
 

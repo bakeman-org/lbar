@@ -260,6 +260,7 @@ static void zwp_ti_commit(struct zwp_text_input_v3 *ti) {
 #define LBAR_EV_MAX 64
 #define LBAR_EV_TEXT_MAX 512
 #define LBAR_POPUP_MAX 32
+#define LBAR_TRAY_MAX 32
 
 /* per-window reusable X11 upload image. recreating the XImage (with its
  * calloc/mmap churn) every frame was the main X11 stall; MIT-SHM is used
@@ -306,6 +307,9 @@ typedef struct {
   int configured;
   int flush_pending;
   int busy;
+  /* a flush was dropped because the buffer was still busy: retry once the
+     compositor releases it (X11 does the same via shm completion events) */
+  int drop_pending;
 } lbar_popup_t;
 
 typedef struct lbar_ctx {
@@ -325,6 +329,26 @@ typedef struct lbar_ctx {
   x_img_t bar_img;
   int x_shm_ok;
   int shm_ev_base;
+
+  /* XEmbed system tray host (X11 / XWayland). See lbar_tray_init below. */
+  Display *tray_dpy;
+  int tray_screen;
+  Window tray_root;
+  Window tray_win;    /* container icons are reparented into */
+  GC tray_gc;
+  int tray_active;    /* claimed the _NET_SYSTEM_TRAY_S<n> selection */
+  int tray_icon_size;
+  int tray_gap;
+  int tray_x, tray_y;   /* destination rect inside the bar */
+  int tray_ox, tray_oy; /* bar surface origin on screen */
+  int tray_w, tray_h; /* container size */
+  int tray_changed;   /* icon set changed since last poll */
+  Atom tray_selection, tray_opcode, tray_manager, tray_xembed;
+  struct {
+    Window win;
+    int w, h, x;
+  } tray_items[LBAR_TRAY_MAX];
+  int tray_n;
 
   lbar_popup_t popups[LBAR_POPUP_MAX];
   int n_popups;
@@ -360,6 +384,7 @@ typedef struct lbar_ctx {
   int bar_margin;
   int bar_configured;
   int bar_busy;
+  int bar_drop_pending;
 
   /* full-screen transparent catcher surface (wayland): sits on the TOP
    * layer under the OVERLAY panels and delivers presses that land outside
@@ -767,6 +792,12 @@ static void bar_buf_release(void *data, struct wl_buffer *b) {
   lbar_ctx *c = data;
   (void)b;
   c->bar_busy = 0;
+  /* a frame was dropped while busy: schedule one redraw so the bar never
+     stays showing stale content (hover/click feedback would lag otherwise) */
+  if (c->bar_drop_pending) {
+    c->bar_drop_pending = 0;
+    ev_push(c, 4, 0, 0, 0, 0, 0, 0, 0, 0, -1);
+  }
 }
 static const struct wl_buffer_listener bar_buf_listener = {
     .release = bar_buf_release,
@@ -775,8 +806,14 @@ static void pop_buf_release(void *data, struct wl_buffer *b) {
   lbar_ctx *c = data;
   (void)b;
   for (int i = 0; i < c->n_popups; i++)
-    if (c->popups[i].buf == b)
+    if (c->popups[i].buf == b) {
       c->popups[i].busy = 0;
+      /* flush the frame that was dropped while this buffer was busy */
+      if (c->popups[i].drop_pending) {
+        c->popups[i].drop_pending = 0;
+        ev_push(c, 4, 0, 0, 0, 0, 0, 1, 0, 0, i);
+      }
+    }
 }
 static const struct wl_buffer_listener pop_buf_listener = {
     .release = pop_buf_release,
@@ -1235,6 +1272,7 @@ static void wl_popup_hide(lbar_ctx *c, lbar_popup_t *p) {
   p->visible = 0;
   p->flush_pending = 0;
   p->busy = 0;
+  p->drop_pending = 0;
   p->configured = 0;
   if (p->surf || p->layer || p->buf || p->pool || p->pix) {
     popup_destroy_slot(c, p);
@@ -1431,6 +1469,350 @@ static void x_popup_hide(lbar_ctx *c, lbar_popup_t *p) {
   XUnmapWindow(c->x_dpy, p->x_win);
   XFlush(c->x_dpy);
   LOG_INFO("popup hide");
+}
+
+/* ── XEmbed system tray host ─────────────────────────────────────────────
+   Implements the freedesktop "system tray" protocol (_NET_SYSTEM_TRAY_S<n>)
+   so apps that register a notification-area icon show up in the bar.
+
+   • X11 backend: the container is reparented into the bar window, so icons
+     render natively on top of the bar and receive clicks directly.
+   • Wayland backend: the container is mapped off-screen through XWayland and
+     its pixels are blitted into the bar surface; clicks are forwarded to the
+     icon with XSendEvent.
+
+   Native SNI (StatusNotifierItem / DBus) apps are NOT handled here — only the
+   classic XEmbed protocol (used by X11 apps, Wine, Java, older Qt/GTK apps). */
+
+static void tray_send_xembed(lbar_ctx *c, Window win, long opcode, long d1,
+                             long d2, long d3) {
+  XEvent ev;
+  memset(&ev, 0, sizeof(ev));
+  ev.xclient.type = ClientMessage;
+  ev.xclient.window = win;
+  ev.xclient.message_type = c->tray_xembed;
+  ev.xclient.format = 32;
+  ev.xclient.data.l[0] = CurrentTime;
+  ev.xclient.data.l[1] = opcode;
+  ev.xclient.data.l[2] = d1;
+  ev.xclient.data.l[3] = d2;
+  ev.xclient.data.l[4] = d3;
+  XSendEvent(c->tray_dpy, win, False, NoEventMask, &ev);
+}
+
+static void tray_remove_at(lbar_ctx *c, int i) {
+  if (i < 0 || i >= c->tray_n)
+    return;
+  for (int j = i; j < c->tray_n - 1; j++)
+    c->tray_items[j] = c->tray_items[j + 1];
+  c->tray_n--;
+  c->tray_changed = 1;
+  /* empty tray: hide the container so it can't linger over the bar */
+  if (c->tray_n == 0 && c->tray_win)
+    XUnmapWindow(c->tray_dpy, c->tray_win);
+}
+
+static void tray_dock(lbar_ctx *c, Window icon) {
+  if (c->tray_n >= LBAR_TRAY_MAX || !c->tray_win)
+    return;
+  /* (re)map the container: it is unmapped while the tray is empty */
+  XMapWindow(c->tray_dpy, c->tray_win);
+  int size = c->tray_icon_size;
+  int x = 0;
+  for (int i = 0; i < c->tray_n; i++)
+    x += c->tray_items[i].w + c->tray_gap;
+  /* grow the container to cover the new slot now: an icon parked beyond the
+     container bounds is invisible, and reading past the drawable makes the
+     Wayland blit's XGetImage fail with BadMatch until the next layout */
+  int need_w = x + size, need_h = size;
+  if (c->tray_w < need_w || c->tray_h < need_h) {
+    if (need_w > c->tray_w)
+      c->tray_w = need_w;
+    if (need_h > c->tray_h)
+      c->tray_h = need_h;
+    if (c->is_wayland)
+      XMoveResizeWindow(c->tray_dpy, c->tray_win, c->tray_ox + c->tray_x,
+                        c->tray_oy + c->tray_y, (unsigned)c->tray_w,
+                        (unsigned)c->tray_h);
+    else
+      XResizeWindow(c->tray_dpy, c->tray_win, (unsigned)c->tray_w,
+                    (unsigned)c->tray_h);
+  }
+  XSelectInput(c->tray_dpy, icon, StructureNotifyMask);
+  XSetWindowBorderWidth(c->tray_dpy, icon, 0);
+  XReparentWindow(c->tray_dpy, icon, c->tray_win, x, 0);
+  XResizeWindow(c->tray_dpy, icon, (unsigned)size, (unsigned)size);
+  XMapWindow(c->tray_dpy, icon);
+  /* XEMBED_EMBEDDED_NOTIFY (0): data1 = embedder window, data2 = version */
+  tray_send_xembed(c, icon, 0, 0, (long)c->tray_win, 0);
+  c->tray_items[c->tray_n].win = icon;
+  c->tray_items[c->tray_n].w = size;
+  c->tray_items[c->tray_n].h = size;
+  c->tray_items[c->tray_n].x = x;
+  c->tray_n++;
+  c->tray_changed = 1;
+  XFlush(c->tray_dpy);
+}
+
+static void tray_poll(lbar_ctx *c) {
+  if (!c->tray_dpy)
+    return;
+  while (XPending(c->tray_dpy) > 0) {
+    XEvent e;
+    XNextEvent(c->tray_dpy, &e);
+    if (e.type == ClientMessage) {
+      if (e.xclient.message_type == c->tray_opcode &&
+          e.xclient.data.l[1] == 0 /* SYSTEM_TRAY_REQUEST_DOCK */) {
+        tray_dock(c, (Window)e.xclient.data.l[2]);
+      }
+    } else if (e.type == DestroyNotify) {
+      Window w = e.xdestroywindow.window;
+      for (int i = 0; i < c->tray_n; i++)
+        if (c->tray_items[i].win == w) {
+          tray_remove_at(c, i);
+          break;
+        }
+    } else if (e.type == ReparentNotify) {
+      /* icon pulled out of our container by its owner */
+      if (e.xreparent.parent != c->tray_win) {
+        Window w = e.xreparent.window;
+        for (int i = 0; i < c->tray_n; i++)
+          if (c->tray_items[i].win == w) {
+            tray_remove_at(c, i);
+            break;
+          }
+      }
+    } else if (e.type == SelectionClear) {
+      c->tray_active = 0;
+      c->tray_n = 0;
+      c->tray_changed = 1;
+    }
+  }
+  if (c->tray_changed) {
+    c->tray_changed = 0;
+    ev_push(c, 8, 0, 0, 0, 0, 0, 0, 0, 0, c->tray_n);
+  }
+}
+
+/* Claim the tray selection and create the container. bg_rgb = the bar's
+   surface colour, used as the container background so blits land cleanly. */
+int lbar_tray_init(lbar_ctx *c, int icon_size, int bg_rgb) {
+  if (!c->tray_dpy) {
+    c->tray_dpy = XOpenDisplay(NULL);
+    if (!c->tray_dpy) {
+      LOG_WARN("tray: no X11 display (XWayland missing?)");
+      return -1;
+    }
+    c->tray_screen = DefaultScreen(c->tray_dpy);
+    c->tray_root = RootWindow(c->tray_dpy, c->tray_screen);
+  }
+  c->tray_icon_size = icon_size > 0 ? icon_size : 20;
+  if (c->tray_icon_size > LBAR_TRAY_MAX)
+    c->tray_icon_size = LBAR_TRAY_MAX;
+  c->tray_w = c->tray_icon_size;
+  c->tray_h = c->tray_icon_size;
+
+  if (!c->tray_win) {
+    XSetWindowAttributes a;
+    memset(&a, 0, sizeof(a));
+    a.override_redirect = True;
+    a.background_pixel = (unsigned long)(bg_rgb & 0xFFFFFF);
+    a.event_mask = SubstructureNotifyMask | ExposureMask;
+    unsigned long mask = CWOverrideRedirect | CWBackPixel | CWEventMask;
+    /* X11: live inside the bar window so icons render natively on top of it.
+       Wayland: a top-level over the root, mapped off-screen and blitted. */
+    Window parent = c->is_wayland ? c->tray_root : c->x_bar_win;
+    c->tray_win = XCreateWindow(c->tray_dpy, parent, 0, 0,
+                                (unsigned)c->tray_w, (unsigned)c->tray_h, 0,
+                                CopyFromParent, InputOutput, CopyFromParent, mask,
+                                &a);
+    if (!c->tray_win) {
+      LOG_WARN("tray: cannot create container window");
+      return -1;
+    }
+    c->tray_gc = XCreateGC(c->tray_dpy, c->tray_win, 0, NULL);
+  }
+
+  char sel[64];
+  snprintf(sel, sizeof(sel), "_NET_SYSTEM_TRAY_S%d", c->tray_screen);
+  c->tray_selection = XInternAtom(c->tray_dpy, sel, False);
+  c->tray_opcode = XInternAtom(c->tray_dpy, "_NET_SYSTEM_TRAY_OPCODE", False);
+  c->tray_manager = XInternAtom(c->tray_dpy, "MANAGER", False);
+  c->tray_xembed = XInternAtom(c->tray_dpy, "_XEMBED", False);
+
+  XSetSelectionOwner(c->tray_dpy, c->tray_selection, c->tray_win, CurrentTime);
+  if (XGetSelectionOwner(c->tray_dpy, c->tray_selection) != c->tray_win) {
+    LOG_WARN("tray: another system tray owns %s", sel);
+    /* release what we created so a later retry starts clean */
+    XDestroyWindow(c->tray_dpy, c->tray_win);
+    if (c->tray_gc) {
+      XFreeGC(c->tray_dpy, c->tray_gc);
+      c->tray_gc = 0;
+    }
+    c->tray_win = 0;
+    return -1;
+  }
+  c->tray_active = 1;
+
+  /* advertise horizontal orientation on the selection owner window */
+  Atom orient = XInternAtom(c->tray_dpy, "_NET_SYSTEM_TRAY_ORIENTATION", False);
+  unsigned long horizontal = 0;
+  XChangeProperty(c->tray_dpy, c->tray_win, orient, XA_CARDINAL, 32,
+                  PropModeReplace, (unsigned char *)&horizontal, 1);
+
+  if (c->is_wayland) {
+    XMoveWindow(c->tray_dpy, c->tray_win, -10000, -10000);
+  }
+  /* the container stays unmapped until the first icon docks */
+
+  /* MANAGER announce so already-running icons dock with us */
+  XClientMessageEvent m;
+  memset(&m, 0, sizeof(m));
+  m.type = ClientMessage;
+  m.window = c->tray_root;
+  m.message_type = c->tray_manager;
+  m.format = 32;
+  m.data.l[0] = CurrentTime;
+  m.data.l[1] = (long)c->tray_selection;
+  m.data.l[2] = (long)c->tray_win;
+  XSendEvent(c->tray_dpy, c->tray_root, False, StructureNotifyMask, (XEvent *)&m);
+  XFlush(c->tray_dpy);
+  LOG_INFO("tray: hosting %s (icon=%d, wayland=%d)", sel, c->tray_icon_size,
+           c->is_wayland);
+  return 0;
+}
+
+int lbar_tray_available(lbar_ctx *c) { return c->tray_active ? 1 : 0; }
+
+int lbar_tray_count(lbar_ctx *c) { return c->tray_active ? c->tray_n : 0; }
+
+/* Arrange the icons and (on X11) position the container inside the bar.
+   `y` is the vertical offset within the bar, in bar-local coordinates.
+   Returns the total width occupied. */
+int lbar_tray_layout(lbar_ctx *c, int x, int y, int ox, int oy, int icon_size,
+                     int gap) {
+  if (!c->tray_dpy || !c->tray_win)
+    return 0;
+  c->tray_x = x;
+  c->tray_y = y;
+  c->tray_ox = ox;
+  c->tray_oy = oy;
+  c->tray_gap = gap >= 0 ? gap : 0;
+  if (icon_size > 0)
+    c->tray_icon_size = icon_size;
+  int total = 0;
+  if (c->tray_n > 0)
+    total = c->tray_n * c->tray_icon_size + (c->tray_n - 1) * c->tray_gap;
+  c->tray_w = total > 0 ? total : 1;
+  c->tray_h = c->tray_icon_size;
+  /* Wayland keeps the container off-screen; its size must still track the
+     icon run or the blit's XGetImage reads past the drawable (BadMatch) */
+  if (c->is_wayland)
+    XMoveResizeWindow(c->tray_dpy, c->tray_win, ox + x, oy + y,
+                      (unsigned)c->tray_w, (unsigned)c->tray_h);
+  else
+    XMoveResizeWindow(c->tray_dpy, c->tray_win, x, y, (unsigned)c->tray_w,
+                      (unsigned)c->tray_h);
+  int px = 0;
+  for (int i = 0; i < c->tray_n; i++) {
+    if (c->tray_items[i].w != c->tray_icon_size) {
+      XResizeWindow(c->tray_dpy, c->tray_items[i].win,
+                    (unsigned)c->tray_icon_size, (unsigned)c->tray_icon_size);
+      c->tray_items[i].w = c->tray_icon_size;
+      c->tray_items[i].h = c->tray_icon_size;
+    }
+    c->tray_items[i].x = px;
+    XMoveWindow(c->tray_dpy, c->tray_items[i].win, px, 0);
+    px += c->tray_icon_size + c->tray_gap;
+  }
+  XFlush(c->tray_dpy);
+  return total;
+}
+
+/* Wayland only: composite the container's pixels into the bar surface.
+   Pixels over fully transparent bar areas are skipped so the bar's rounded
+   corners survive. Returns 1 if anything was drawn. */
+int lbar_tray_blit(lbar_ctx *c, uint32_t *dst, int dst_w, int dst_h) {
+  if (!c->tray_dpy || !c->tray_win || c->tray_n == 0)
+    return 0;
+  int w = c->tray_w, h = c->tray_h;
+  if (w <= 0 || h <= 0)
+    return 0;
+  XImage *img = XGetImage(c->tray_dpy, c->tray_win, 0, 0, (unsigned)w,
+                          (unsigned)h, AllPlanes, ZPixmap);
+  if (!img)
+    return 0;
+  for (int yy = 0; yy < h; yy++) {
+    int dy = c->tray_y + yy;
+    if (dy < 0 || dy >= dst_h)
+      continue;
+    uint32_t *drow = dst + (size_t)dy * dst_w;
+    for (int xx = 0; xx < w; xx++) {
+      int dx = c->tray_x + xx;
+      if (dx < 0 || dx >= dst_w)
+        continue;
+      if ((drow[dx] >> 24) == 0)
+        continue;
+      unsigned long p = XGetPixel(img, xx, yy);
+      drow[dx] = 0xFF000000u | (uint32_t)(p & 0xFFFFFF);
+    }
+  }
+  XDestroyImage(img);
+  return 1;
+}
+
+/* Wayland only: forward a bar-local click to the icon under it. lx is relative
+   to the branch's left edge (bar-local), ly is bar-local. */
+int lbar_tray_click(lbar_ctx *c, int lx, int ly, int btn) {
+  if (!c->tray_dpy || c->tray_n == 0)
+    return 0;
+  for (int i = 0; i < c->tray_n; i++) {
+    int ix = c->tray_items[i].x;
+    if (lx < ix || lx >= ix + c->tray_items[i].w || ly < 0 ||
+        ly >= c->tray_items[i].h)
+      continue;
+    Window win = c->tray_items[i].win;
+    XEvent ev;
+    for (int press = 1; press >= 0; press--) {
+      memset(&ev, 0, sizeof(ev));
+      ev.xbutton.type = press ? ButtonPress : ButtonRelease;
+      ev.xbutton.display = c->tray_dpy;
+      ev.xbutton.window = win;
+      ev.xbutton.root = c->tray_root;
+      ev.xbutton.subwindow = None;
+      ev.xbutton.time = CurrentTime;
+      /* root 坐标用屏幕真实位置：应用据此决定菜单弹出位置 */
+      ev.xbutton.x = lx - ix;
+      ev.xbutton.y = ly;
+      ev.xbutton.x_root = c->tray_ox + c->tray_x + (lx - ix);
+      ev.xbutton.y_root = c->tray_oy + c->tray_y + ly;
+      ev.xbutton.state = 0;
+      ev.xbutton.button = (unsigned)btn;
+      ev.xbutton.same_screen = True;
+      XSendEvent(c->tray_dpy, win, False,
+                 press ? ButtonPressMask : ButtonReleaseMask, &ev);
+    }
+    XFlush(c->tray_dpy);
+    return 1;
+  }
+  return 0;
+}
+
+void lbar_tray_shutdown(lbar_ctx *c) {
+  if (c->tray_dpy) {
+    if (c->tray_win) {
+      XDestroyWindow(c->tray_dpy, c->tray_win);
+      c->tray_win = 0;
+    }
+    if (c->tray_gc) {
+      XFreeGC(c->tray_dpy, c->tray_gc);
+      c->tray_gc = 0;
+    }
+    XCloseDisplay(c->tray_dpy);
+    c->tray_dpy = NULL;
+  }
+  c->tray_active = 0;
+  c->tray_n = 0;
 }
 
 lbar_ctx *lbar_open(void) {
@@ -1638,8 +2020,11 @@ void lbar_bar_flush(lbar_ctx *c, const uint32_t *pixels) {
       if (recreate_bar_buffer(c) < 0)
         return;
     }
-    if (c->bar_busy || !c->bar_buf)
+    if (c->bar_busy || !c->bar_buf) {
+      if (c->bar_busy)
+        c->bar_drop_pending = 1;
       return;
+    }
     memcpy(c->bar_pix, pixels, (size_t)c->bar_w * c->bar_h * 4);
     wl_surface_attach(c->bar_surf, c->bar_buf, 0, 0);
     wl_surface_damage(c->bar_surf, 0, 0, c->bar_w, c->bar_h);
@@ -2047,8 +2432,15 @@ void lbar_popup_flush(lbar_ctx *c, int id, const uint32_t *pixels, int sw,
       if (recreate_pop_buffer(c, p) < 0)
         return;
     }
-    if (p->busy || !p->buf || !p->surf)
+    if (p->busy || !p->buf || !p->surf) {
+      /* buffer still on screen: dropping is fine, but remember to redraw
+         once the compositor releases it — otherwise the panel keeps
+         showing the previous frame (stale toggle state, truncated
+         resize) until an unrelated event happens to redraw */
+      if (p->busy)
+        p->drop_pending = 1;
       return;
+    }
     if (out_w)
       *out_w = p->w;
     if (out_h)
@@ -2270,6 +2662,7 @@ int lbar_poll(lbar_ctx *c, int timeout_ms) {
   } else {
     drain_x11_events(c);
   }
+  tray_poll(c);
   return 0;
 }
 
@@ -2284,6 +2677,7 @@ int lbar_next_event(lbar_ctx *c, lbar_ev_t *out) {
 void lbar_close(lbar_ctx *c) {
   if (!c)
     return;
+  lbar_tray_shutdown(c);
   if (c->ipc_fd >= 0) {
     close(c->ipc_fd);
     c->ipc_fd = -1;

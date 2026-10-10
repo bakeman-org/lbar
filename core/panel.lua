@@ -10,6 +10,11 @@ local Util = require("core.util")
 local Panel = {}
 Panel.__index = Panel
 
+-- reusable FFI out-buffers (single-threaded, non-reentrant paths) to avoid
+-- allocating int[1]/char[?] on every draw and key event
+local _sz_w, _sz_h = ffi.new("int[1]"), ffi.new("int[1]")
+local _kbuf = ffi.new("char[?]", 64)
+
 local function clamp(v, lo, hi)
 	if v < lo then
 		return lo
@@ -21,9 +26,8 @@ local function clamp(v, lo, hi)
 end
 
 local function key_translate(ctx, keycode, state)
-	local buf = ffi.new("char[?]", 64)
-	local sym = ctx.L.lbar_key_lookup(ctx.Lctx, keycode, state, buf, 64)
-	local text = ffi.string(buf)
+	local sym = ctx.L.lbar_key_lookup(ctx.Lctx, keycode, state, _kbuf, 64)
+	local text = ffi.string(_kbuf)
 	local ctrl = bit.band(state, 0x4) ~= 0
 	local shift = bit.band(state, 0x1) ~= 0
 	return tonumber(sym), text, ctrl, shift
@@ -156,13 +160,21 @@ function Panel:live_resize(w, h)
 	if w == self.w and h == self.h then
 		return false
 	end
-	local sx, sy = self.sx, self.sy
+	-- 面板重新计算尺寸后可能变大：原坐标会让面板溢出屏幕边缘，
+	-- 因此按新尺寸重新夹取到屏幕内（如 bottom_right 面板变高时自动上移）
+	local sx = clamp(self.sx, 8, math.max(8, self.ctx.scr_w - 8 - w))
+	local sy = clamp(self.sy, 8, math.max(8, self.ctx.scr_h - 8 - h))
 	local rc = self.ctx.L.lbar_popup_resize(self.ctx.Lctx, self.id, w, h)
 	if rc ~= 0 then
 		return false
 	end
 	self.w, self.h = w, h
 	self.surf = ffi.new("uint32_t[?]", w * h)
+	-- 记住的拖拽位置同步夹取，避免下次显示又跑到屏幕外
+	if self.user_pos then
+		self.user_pos.x = clamp(self.user_pos.x, 8, math.max(8, self.ctx.scr_w - 8 - w))
+		self.user_pos.y = clamp(self.user_pos.y, 8, math.max(8, self.ctx.scr_h - 8 - h))
+	end
 	self.mx, self.my = -1, -1
 	if self.visible then
 		self.sx, self.sy = sx, sy
@@ -213,10 +225,20 @@ end
 
 function Panel:move_to(x, y)
 	local ctx = self.ctx
-	x = clamp(math.floor(x), 0, ctx.scr_w - self.w)
-	y = clamp(math.floor(y), 0, ctx.scr_h - self.h)
+	x = clamp(math.floor(x), 8, math.max(8, ctx.scr_w - 8 - self.w))
+	y = clamp(math.floor(y), 8, math.max(8, ctx.scr_h - 8 - self.h))
+	if x == self.sx and y == self.sy then
+		return true
+	end
 	self.sx, self.sy = x, y
-	self.user_pos = { x = x, y = y }
+	-- reuse the position table: dragging emits a move per motion event and
+	-- allocating a fresh table each time churns the GC during drags
+	local up = self.user_pos
+	if up then
+		up.x, up.y = x, y
+	else
+		self.user_pos = { x = x, y = y }
+	end
 	if self.visible then
 		self.anim_x, self.anim_y = x, y
 		self.tx, self.ty = x, y
@@ -399,6 +421,11 @@ function Panel:show_at(anchor_x, anchor_y, direction, align)
 	end
 	y = clamp(y, 8, ctx.scr_h - 8 - self.h)
 	self.sx, self.sy = x, y
+	-- anchored panels dodge occupied areas too (stay as close to the
+	-- anchor as a free spot allows) so several open panels never stack
+	if self.name ~= "toast" then
+		self:avoid_overlap()
+	end
 	self.last_anchor = { x = anchor_x, y = anchor_y, dir = self.anchor_dir, align = align }
 	self:_begin_show()
 end
@@ -409,34 +436,89 @@ function Panel:show_xy(x, y)
 	self.anchor_dir = nil
 	self.pos = nil
 	self.last_anchor = nil
-	self.sx = clamp(math.floor(x), 0, ctx.scr_w - self.w)
-	self.sy = clamp(math.floor(y), 0, ctx.scr_h - self.h)
+	self.sx = clamp(math.floor(x), 8, math.max(8, ctx.scr_w - 8 - self.w))
+	self.sy = clamp(math.floor(y), 8, math.max(8, ctx.scr_h - 8 - self.h))
 	self:_begin_show()
 end
 
--- cascade: shift a free-positioned panel diagonally until it no longer
--- fully stacks on a visible panel (simultaneous panels stay readable)
+-- multi-panel placement: keep the desired position, otherwise pick the
+-- visible-panel-free spot closest to it (candidate anchors = screen
+-- edges/center + every visible panel's edges); diagonal cascade is the
+-- last resort. simultaneous panels stay readable instead of stacking
+-- opaque on top of each other
 function Panel:avoid_overlap()
 	local ctx = self.ctx
-	local bx, by = self.sx, self.sy
-	for _ = 1, 24 do
-		local clash = false
-		for _, q in pairs(ctx._panels or {}) do
-			if q ~= self and q.name ~= "toast" and q.visible and not q.destroyed
-				and self.sx < q.sx + q.w and self.sx + self.w > q.sx
-				and self.sy < q.sy + q.h and self.sy + self.h > q.sy then
-				clash = true
-				break
+	if self.name == "toast" or self.w <= 0 or self.h <= 0 then
+		return
+	end
+	local vis = {}
+	for _, q in pairs(ctx._panels or {}) do
+		if q ~= self and q.name ~= "toast" and q.visible and not q.destroyed
+			and q.w > 0 and q.h > 0 then
+			vis[#vis + 1] = q
+		end
+	end
+	if #vis == 0 then
+		return
+	end
+	local max_x = math.max(8, ctx.scr_w - 8 - self.w)
+	local max_y = math.max(8, ctx.scr_h - 8 - self.h)
+	local function clashes(px, py)
+		for i = 1, #vis do
+			local q = vis[i]
+			if px < q.sx + q.w and px + self.w > q.sx
+				and py < q.sy + q.h and py + self.h > q.sy then
+				return true
 			end
 		end
-		if not clash then
+		return false
+	end
+	local x0, y0 = self.sx, self.sy
+	if not clashes(x0, y0) then
+		return
+	end
+	-- candidate anchors: screen edges/center + edges of every visible panel
+	local xs = { 8, max_x, math.floor((ctx.scr_w - self.w) / 2) }
+	local ys = { 8, max_y, math.floor((ctx.scr_h - self.h) / 2) }
+	for i = 1, #vis do
+		local q = vis[i]
+		xs[#xs + 1] = q.sx - self.w - 8
+		xs[#xs + 1] = q.sx + q.w + 8
+		ys[#ys + 1] = q.sy - self.h - 8
+		ys[#ys + 1] = q.sy + q.h + 8
+	end
+	local bx, by, bd
+	for i = 1, #xs do
+		local px = clamp(math.floor(xs[i]), 8, max_x)
+		for j = 1, #ys do
+			local py = clamp(math.floor(ys[j]), 8, max_y)
+			if not clashes(px, py) then
+				local dx, dy = px - x0, py - y0
+				local d = dx * dx + dy * dy
+				if not bd or d < bd then
+					bx, by, bd = px, py, d
+				end
+			end
+		end
+	end
+	if bx then
+		self.sx, self.sy = bx, by
+		return
+	end
+	-- screen is full: cascade from the desired spot while there is room
+	bx, by = x0, y0
+	for _ = 1, 32 do
+		bx, by = bx + 36, by + 28
+		local px, py = clamp(bx, 8, max_x), clamp(by, 8, max_y)
+		if not clashes(px, py) then
+			self.sx, self.sy = px, py
 			return
 		end
-		bx = bx + 36
-		by = by + 28
-		self.sx = clamp(bx, 8, ctx.scr_w - 8 - self.w)
-		self.sy = clamp(by, 8, ctx.scr_h - 8 - self.h)
+		if px == max_x and py == max_y then
+			break
+		end
 	end
+	self.sx, self.sy = x0, y0
 end
 
 function Panel:show()
@@ -450,8 +532,8 @@ function Panel:show()
 		return self:show_at(a.x, a.y, a.dir, a.align)
 	end
 	if self.user_pos then
-		self.sx = clamp(self.user_pos.x, 0, ctx.scr_w - self.w)
-		self.sy = clamp(self.user_pos.y, 0, ctx.scr_h - self.h)
+		self.sx = clamp(self.user_pos.x, 8, math.max(8, ctx.scr_w - 8 - self.w))
+		self.sy = clamp(self.user_pos.y, 8, math.max(8, ctx.scr_h - 8 - self.h))
 	else
 		self.sx, self.sy = self:layout_free()
 		if self.name ~= "toast" then
@@ -590,6 +672,14 @@ function Panel:hide(instant)
 end
 
 function Panel:tick(dt)
+	-- 点击后补画一帧：控件先按旧值绘制、再在绘制中检测点击并应用新值，
+	-- 不补画就会一直显示旧状态（要等鼠标移动才刷新）
+	if self._click_dirty then
+		self._click_dirty = false
+		if self.visible then
+			self:draw()
+		end
+	end
 	-- deferred motion draw: on_motion throttled this draw; flush it now so
 	-- the hover/highlight state is never more than one frame stale
 	if self._motion_dirty then
@@ -645,6 +735,25 @@ function Panel:tick(dt)
 	end
 end
 
+-- surface size changed underneath us (backend echo): keep the panel
+-- inside the screen with the standard 8px margin, never let the bottom
+-- or right edge hang off-screen
+function Panel:_reclamp_geom()
+	local ctx = self.ctx
+	local x = clamp(self.sx, 8, math.max(8, ctx.scr_w - 8 - self.w))
+	local y = clamp(self.sy, 8, math.max(8, ctx.scr_h - 8 - self.h))
+	if x == self.sx and y == self.sy then
+		return
+	end
+	self.sx, self.sy = x, y
+	if self.visible then
+		self.anim_x, self.anim_y = x, y
+		self.tx, self.ty = x, y
+		self.animating = false
+		ctx.L.lbar_popup_move(ctx.Lctx, self.id, x, y)
+	end
+end
+
 function Panel:draw()
 	if self.destroyed or not self.surf then
 		return
@@ -653,13 +762,16 @@ function Panel:draw()
 		return
 	end
 	self._drawing = true
+	-- 本帧是否有待处理的鼠标释放（用于帧末判断是否需要补画，见 Panel:tick）
+	local click_pending = self.ui ~= nil and self.ui.mrelease ~= nil
 	local L = self.ctx.L
-	local cw, ch = ffi.new("int[1]"), ffi.new("int[1]")
+	local cw, ch = _sz_w, _sz_h
 	L.lbar_popup_size(self.ctx.Lctx, self.id, cw, ch)
 	if cw[0] > 0 and ch[0] > 0 and (cw[0] ~= self.w or ch[0] ~= self.h) then
 		self.w, self.h = cw[0], ch[0]
 		self.surf = ffi.new("uint32_t[?]", self.w * self.h)
 		self.mx, self.my = -1, -1
+		self:_reclamp_geom()
 	end
 	L.surf_fill(self.surf, self.w, self.h, 0, 0, self.w, self.h, self.bg)
 	if self.ui then
@@ -678,6 +790,10 @@ function Panel:draw()
 	if cw[0] > 0 and ch[0] > 0 and (cw[0] ~= self.w or ch[0] ~= self.h) then
 		self.w, self.h = cw[0], ch[0]
 		self.surf = ffi.new("uint32_t[?]", self.w * self.h)
+		self:_reclamp_geom()
+	end
+	if click_pending and self.visible then
+		self._click_dirty = true
 	end
 	self._drawing = false
 end

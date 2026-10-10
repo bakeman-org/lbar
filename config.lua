@@ -45,7 +45,15 @@ return {
         'launcher', 'keybinds_help', 'clip_hist', 'pomodoro',
         'music_player', 'weather', 'sysinfo', 'sysmon',
         'color_picker', 'ui_demo', 'hide_all', 'settings', 'wallpaper',
-        'wifi', 'volume', 'battery', 'clock',
+        'wifi', 'volume', 'battery', 'tray', 'clock',
+    },
+
+    -- 系统托盘（XEmbed 协议：X11 应用 / Wine / Java / 旧版 Qt、GTK）
+    -- 依赖 XWayland；原生 SNI（DBus StatusNotifierItem）应用暂不支持
+    tray = {
+        enabled   = true,      -- 是否启用托盘
+        icon_size = 20,        -- 图标尺寸（px，会自动限制为不超过栏高）
+        gap       = 6,         -- 图标间距（px）
     },
 
     -- cpu/mem bar item 采样与配色
@@ -104,8 +112,9 @@ return {
         settings = { dismiss_outside = false },
         wallpaper = { dismiss_outside = true },
         wifi = { dismiss_outside = false },
-        battery = { dismiss_outside = true },
+        battery = { dismiss_outside = false },
         volume = { dismiss_outside = true },
+        clip_hist = { dismiss_outside = false },
     },
 
     -- ── 全局快捷键（与 xpet 相同风格）──
@@ -185,10 +194,13 @@ return {
     -- ── 每个面板的默认位置与动画 ──
     -- pos: center/top/bottom/left/right/top_left/top_right/bottom_left/
     --      bottom_right，或 'auto' 锚定到对应 bar item 下方；
-    --      拖拽过的面板记住位置（user_pos 优先级最高），重叠面板自动级联错开
+    --      拖拽过的面板记住位置（user_pos 优先级最高），重叠面板自动错开
+    -- anim: 'auto'（按 pos/锚点推导）| 'slide_up' | 'slide_down' |
+    --       'slide_left' | 'slide_right' | 'none'；
+    --       默认配置已覆盖全部 6 种取值（见 docs/config.md）
     panels = {
         clock          = { pos = 'top', anim = 'auto' },
-        volume         = { pos = 'bottom_right', anim = 'auto' },
+        volume         = { pos = 'bottom_right', anim = 'slide_up' },
         launcher       = { pos = 'top', anim = 'slide_down' },
         clip_hist      = { pos = 'top', anim = 'auto' },
         pomodoro       = { pos = 'bottom_right', anim = 'auto' },
@@ -196,9 +208,9 @@ return {
         weather        = { pos = 'top_right', anim = 'auto' },
         sysinfo        = { pos = 'bottom_left', anim = 'auto' },
         sysmon         = { pos = 'center', anim = 'auto' },
-        color_picker   = { pos = 'right', anim = 'auto' },
-        ui_demo        = { pos = 'center', anim = 'auto' },
-        keybinds_help  = { pos = 'left', anim = 'auto' },
+        color_picker   = { pos = 'right', anim = 'slide_left' },
+        ui_demo        = { pos = 'center', anim = 'none' },
+        keybinds_help  = { pos = 'left', anim = 'slide_right' },
         settings       = { pos = 'center', anim = 'auto' },
         wallpaper      = { pos = 'center', anim = 'auto' },
         wifi           = { pos = 'top_right', anim = 'auto' },

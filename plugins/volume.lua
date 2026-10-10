@@ -54,8 +54,12 @@ local function set_vol(v)
 end
 
 local function toggle_mute(ctx)
-	os.execute("pactl set-sink-mute @DEFAULT_SINK@ toggle >/dev/null 2>&1")
-	refresh()
+	-- instant feedback: flip local state first, defer the real pactl call
+	-- to the next tick so the draw this click belongs to never stalls on
+	-- an audio server roundtrip
+	mute = not mute
+	have_state = true
+	M.pending_mute = true
 	if ctx.bar then
 		ctx.bar.needs_redraw = true
 	end
@@ -236,6 +240,12 @@ end
 function M.tick(ctx, dt)
 	if not M.ready then
 		return
+	end
+	-- the mute switch flipped local state in-draw for instant feedback;
+	-- run the real pactl call here so the draw never blocks on pulseaudio
+	if M.pending_mute then
+		M.pending_mute = nil
+		os.execute("pactl set-sink-mute @DEFAULT_SINK@ toggle >/dev/null 2>&1")
 	end
 	-- coalesce slider drags into one pactl call
 	if pending_vol then

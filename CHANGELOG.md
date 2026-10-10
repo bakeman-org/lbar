@@ -470,8 +470,109 @@ plugins 重排为左→右：信息区（logo/workspace/cpu/mem/launcher）→ �
 随 (a) 的图像缓存 + shm RMID（进程死即回收）覆盖——消除每帧 mmap churn，无新增 Lua 侧常驻。
 ### (e) 中文文档
 config.lua 全文重写为中文分区注释（键值不变，dofile 验证 21 插件加载）；docs/config.md 全文中文化（顶层键/主题/插件/快捷键/面板位置/动画/自适应尺寸/各插件配置节，补 X11 SHM 性能说明）；README.md 从空写成中文项目文档（特性/构建/快捷键表/结构树）；删除无引用的 core/widgets.lua（50 行遗留控件库）。
+---
+
+## 102. 系统托盘（XEmbed）+ 主循环实时刷新 + 文本整形缓存 + 无头插件全量测试
+
+用户反馈：X11 仍不够流畅（拖拽/多面板/按钮延迟）、希望 UI 实时更新、需要 system tray 插件。
+
+### (a) 系统托盘 tray 插件（新增）
+- `src/backends.c` 新增 XEmbed 系统托盘宿主：`lbar_tray_init/available/count/layout/blit/click/shutdown`，实现 `_NET_SYSTEM_TRAY_S<n>` 选择权、`_NET_SYSTEM_TRAY_OPCODE` 停靠请求、`MANAGER` 广播、`_XEMBED` EMBEDDED_NOTIFY、`_NET_SYSTEM_TRAY_ORIENTATION`；`lbar_poll` 每周期 `tray_poll`，图标增减经事件类型 8 通知 Lua 重排；`lbar_close` 释放。
+- X11 后端：图标重 parent 进栏窗口，由 X 原生渲染，左键/滚轮/右键直接生效（无需转发）。
+- Wayland 后端：图标窗口经 XWayland 映射到屏幕外，像素 `XGetImage` 后 alpha 安全地合成进栏表面（跳过栏透明区，保留圆角），点击经 `XSendEvent` 转发。
+- 新增 `plugins/tray.lua`：图标尺寸随栏高自适应，无图标时 item 隐藏（宽度 0）；Wayland 下 2.5Hz 请求重绘以刷新图标。
+- 不支持原生 SNI（DBus StatusNotifierItem，Electron/现代 GTK3）；已有托盘宿主（waybar 等）时自动保持为空、不影响栏。
+- `core/init.lua` 注册 `lbar_tray_*` FFI；`config.lua` 新增 `tray = { enabled, icon_size, gap }` 并把 `tray` 加入 plugins（wifi 与 clock 之间）。
+
+### (b) UI 实时刷新（lbar.lua）
+主循环在处理完事件后、进入 tick 前，若 `bar.needs_redraw` 立即 `bar:draw()`：栏的悬停高亮、点击反馈、主题切换同帧生效，不再最多等 200ms 的 `TICK_MS`；空闲循环（flag 为 false）零开销。
+
+### (c) 文本渲染性能（src/text.c）
+- 新增 shaping 结果缓存（`shape_run_cached`，4096 槽开放寻址，键 = 字体指针 + 字节内容）：同一字符串不再每帧重跑 `hb_ft_font_create_referenced` + `hb_shape`（字体对象创建是文本热点的主要开销）；缓存随字体加载/释放清空。`xft_text_extent`/`xft_draw`/`xft_draw_rgba` 全部改走缓存（已删除旧 `shape_run`）。
+- `lbar.lua` 缓存行高（`_line_h`）与文本尺寸（宽 + 高），用可复用的 `int[1]` 暂存；字体字体热重载后统一 `clear_text_caches()` 刷新。
+
+### (d) 事件 / 分配优化
+- `core/util.lua`：`file_mtime` 改用 FFI `statx(2)` 单系统调用（保留 popen 回退）。此前热重载 watcher 每 800ms 用 `io.popen("stat …")` 为 config + 每个插件（约 22 个）各 fork 一个进程并阻塞主循环等待子进程 —— 这是周期性卡顿/延迟的重要来源。
+- `core/panel.lua`：`move_to` 在坐标未变时提前返回、复用 `user_pos` 表（拖拽不再每帧分配）；`Panel:draw` 与 `key_translate` 复用模块级 `int[1]`/`char[64]` 暂存，避免每帧/每次按键分配。
+
+### (e) 插件全量测试（tools/plugin_test.lua，新增）
+无头测试：纯 Lua 桩替代 `ctx.L`/`ctx.AUD`/主题，对 config 中每个插件执行完整生命周期 —— require → init → width（断言返回 number/nil）→ draw(bar item) → on_click（左键 + 滚轮）→ tick×3 → 每个新面板的 draw/on_press/on_motion/on_release/on_key → 小/大两种尺寸 resize + 重绘 → move_to/live_resize → shutdown，任一步报错即 FAIL 非零退出。支持 `luajit tools/plugin_test.lua <name>…` 单测。
+
 ### 验证
-make 编译 0 warning；i18n_check 319 键 0 缺失；test_multipanel2（19）+ test_sysmon2（9，高度断言改为镜像插件公式的机器无关算式，适配真实核心数）+ test_font_hotreload（12）+ test_savevalue + test_ti_scroll ALL PASS。
+`make` 编译 0 warning（-Wall -Wextra）；`tools/plugin_test.lua` **22/22 PASS**（含新 tray）；`tools/i18n_check.lua` 319 键 0 缺失；全部 Lua 文件 `luajit -bl` 字节码编译通过。
+
+真机（Wayland + XWayland，fcitx5 作为真实 XEmbed 客户端）验证：托盘成功获取 `_NET_SYSTEM_TRAY_S0`，fcitx5 图标停靠并渲染进栏（电池与时钟之间），图标内容变化（键盘 → 拼）实时反映；用临时合成 XEmbed 客户端验证三图标并排布局（容器自动扩到 72x20）与退出回收（回到 20x20），全程 0 X 错误。过程中发现并修复：Wayland 下容器窗口尺寸不随图标数量/尺寸更新 → `XGetImage` 越界 BadMatch、新图标不可见（现于停靠时立即扩容、布局时同步 resize，保持离屏位置）。
+
+---
+
+## 103. 点击即时反馈 + 托盘菜单定位 + 面板溢出屏幕修复
+
+### 面板点击后旧状态滞留（switch 延迟大）
+`ui:toggle/clicked/segmented` 都是「先按旧值绘制、再在绘制中检测点击并应用新值」，因此点击后的新状态要等下一次重绘才可见；而面板只有在鼠标移动（节流）、输入框闪烁或动画时才重绘——点一下开关看起来毫无反应，动一下鼠标才变。
+修复（`core/panel.lua`）：`Panel:draw` 记录本帧是否消费了鼠标释放（`ui.mrelease`），置 `_click_dirty`；`Panel:tick` 开头补画一帧。主循环同轮就会执行该 tick，因此点击反馈**同帧生效**；`ui:finish()` 每帧清空释放事件，不会形成重绘循环。
+
+### Wayland 托盘点击无菜单
+图标容器映射在离屏 `(-10000,-10000)`，转发的点击事件 root 坐标也只是容器内局部值——应用据此决定弹出菜单位置，结果菜单开到屏幕外（「点了没反应」）。
+修复（`src/backends.c` + `plugins/tray.lua` + `core/init.lua`）：`lbar_tray_layout` 新增栏的屏幕原点 `ox/oy` 参数（来自 `bar.x/bar.y`），Wayland 下容器改放在**栏的真实屏幕位置**（被不透明栏表面遮住，layer top 高于普通 X 窗口），`XGetImage` 合成不受影响；转发事件的 `x_root/y_root` 改为屏幕绝对坐标（`tray_ox+tray_x+图标内偏移`）。截图确认图标仍只渲染一次、无重影，容器随栏移动。
+
+### 面板变高后底部溢出屏幕
+`Panel:live_resize` 保留原坐标直接应用新尺寸，bottom_right 等锚定的面板（如音量）变高后下缘跑出屏幕。
+修复（`core/panel.lua`）：live_resize 前后按新尺寸把坐标重新夹取进屏幕，`user_pos` 同步夹取，避免下次显示又越界。
+
+### 验证
+`make` 0 warning；`plugin_test` 22/22；`i18n_check` 0 缺失；lint 0 诊断。托盘容器落在栏内真实坐标（如 `+1403+16`），0 BadMatch。
+
+---
+
+## 104. Wayland 丢帧重试（点击仍滞后的根因）+ 同帧补画
+
+### Wayland 帧被静默丢弃且永不重试
+`lbar_popup_flush`/`lbar_bar_flush` 在合成器仍占用 buffer（`busy`）时直接丢弃本帧：X11 路径有 `drop_pending` → shm 完成事件 → 补画的机制，Wayland 完全没有。后果链：
+- **开关点击后 UI 停在旧状态数秒**：release 帧画的是旧值（新值在绘制中才生效），tick 的补画帧撞上 busy 被丢，之后没有任何东西触发重绘，直到下一个不相关事件（鼠标移动/通知等）才恢复；
+- **面板 resize 后显示截断/错位**：resize 后的新帧被丢，屏幕上还是旧尺寸的 buffer，而位置已按新尺寸计算；
+- **热重载后 UI 有时不刷新**：重载触发的重绘帧被丢。
+
+修复（`src/backends.c`）：popup 与 bar 各加 `drop_pending` 标志，flush 撞上 busy 时置位；`wl_buffer.release` 到达时补推一条 expose 事件（类型 4），Lua 主循环立即重绘该 popup/bar——与 X11 shm 完成事件行为一致。隐藏时清除标志，避免陈旧补画。
+
+### Lua 侧
+`Panel:tick` 补画帧（#103）依旧保留；配合 C 侧重试后点击反馈最迟两帧内呈现。
+
+### 验证
+`make` 0 warning；`plugin_test` 22/22。真机点击/拖拽/resize 手感需会话中复核。
+
+---
+
+## 105. 多面板不重叠布局 + 开关延迟二次优化
+
+### 多面板展示结构调整（避免互相遮挡）
+原 `Panel:avoid_overlap` 只会沿对角线级联 24 次（+36/+28px），屏幕拥挤时（如同时开设置/天气/系统信息/启动器）找不到空位就直接叠上去。重写为**最近空位搜索**：
+- 候选锚点 = 屏幕四角/中心 + 每个可见面板的上下左右边缘（面板数 n → 候选 (2n+3)²，代价可忽略）；
+- 在不与任何可见面板相交的候选中取**离期望位置最近**者——锚定在栏 item 上的面板也参与避让，但会尽量停在锚点附近；
+- 全屏无解时退回对角线级联，仍无解则保持原位（力求不遮挡）。
+接入点：`show()`（自由布局，原有）+ `show_at()`（bar 锚定/还原路径，新增）；toast 与用户拖拽过的面板（`user_pos`）不参与避让，尊重明确意图。场景测试（4 面板围字/目标被占/顶部占用/无占用原地/全屏无解回退）全部通过。
+
+### 静音开关二次优化（插件侧）
+`volume.toggle_mute` 原在绘制帧内同步 `pactl set-sink-mute` + `refresh()`（两次音频服务往返），绘制线程被阻塞。现在点击时先翻转本地状态（同帧可见），pactl 调用推迟到下一轮 `M.tick` 执行；15s 周期刷新负责与真实状态对账。
+
+### 验证
+`plugin_test` 22/22；`i18n_check` 0 缺失；`luajit -bl` 编译通过；临时避让算法场景测试全过（已清理）。
+
+---
+
+## 106. 面板底部截断修复（统一 8px 屏幕边距）+ 动画配置全覆盖
+
+### 底部截断根因与修复（core/panel.lua）
+真机 GEOM 日志实测：全新打开的面板位置全部正确（统一 8px 边距），截断来自若干**边距为 0** 的夹取路径——面板贴死屏幕底/右边缘后视觉上像被截断，尺寸变化时序不巧时内容行会被推出屏幕。统一修复：
+- `live_resize`（内容长高/手动缩放）与 `move_to`（拖拽/移动）的屏幕夹取从 0 边距改为 8px，与布局路径一致；
+- `show()` 恢复拖拽位（user_pos）与 `show_xy` 同样保持 8px；
+- `Panel:draw` 两处从后端回读尺寸的同步点新增 `_reclamp_geom`：surface 尺寸变化后立即重夹取位置并重定位窗口，杜绝"位置按旧尺寸计算、尺寸变大后底部悬空"的窗口期。
+真机验证：sysinfo 探针返回后 711→883 长高时自动上移（sy 561→389），底边恰好 1272=1280−8；volume/pomodoro 等 bottom_* 面板全部界内。附带行为：拖拽/缩放不再能贴死屏幕边缘。
+
+### 动画配置全覆盖（config.lua + tools/plugin_test.lua + docs/config.md）
+支持的 6 种动画（auto/slide_up/slide_down/slide_left/slide_right/none）此前的默认配置只用到 2 种。config.lua 现覆盖全部：volume→slide_up、launcher→slide_down、color_picker→slide_left、keybinds_help→slide_right、ui_demo→none、其余 auto。`plugin_test` 启动时静态检查动画覆盖（取值非法或未覆盖即 FAIL，6/6 通过）；40 项行为断言（auto 方向推导 7 例、四种 slide 入场偏移方向、none 无偏移、move_to/live_resize/user_pos 边距夹取）全过。docs/config.md 补充覆盖说明与新的避让/边距行为描述。
+
+### 验证
+`plugin_test` 22/22（含 anim coverage 6/6）；真机 GEOM 日志确认所有面板 8px 边距界内（临时日志已移除）。
 
 ---
 

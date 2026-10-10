@@ -146,15 +146,35 @@ local ctx = {
 ctx.scr_w = L.lbar_screen_w(Lctx)
 ctx.scr_h = L.lbar_screen_h(Lctx)
 
--- text width cache: get_text_size is a FreeType FFI call that's repeated
--- for the same strings every draw frame (row labels, button text, …).
--- Cache the width keyed by string; clear on font reload.
+-- Text metrics cache. get_text_size/text_width are FreeType FFI calls that
+-- repeat for the same strings every draw frame (row labels, button text, …)
+-- and get_line_height is queried at least once per draw. Cache them all and
+-- refresh on font reload. Scratch int[1] buffers are reused to avoid an
+-- ffi.new allocation on every uncached call.
 local _tw_cache = {}
+local _th_cache = {}
+local _mw, _mh = ffi.new("int[1]"), ffi.new("int[1]")
+local _line_h = L.xft_primary_line_height(ft_ctx)
 ctx._tw_cache = _tw_cache
+local function clear_text_caches()
+	for k in pairs(_tw_cache) do
+		_tw_cache[k] = nil
+	end
+	for k in pairs(_th_cache) do
+		_th_cache[k] = nil
+	end
+	_line_h = L.xft_primary_line_height(ft_ctx)
+end
 function ctx.get_text_size(s)
-	local w, h = ffi.new("int[1]"), ffi.new("int[1]")
-	L.xft_text_extent(ft_ctx, s, w, h)
-	return w[0], h[0]
+	local w = _tw_cache[s]
+	if w then
+		return w, _th_cache[s]
+	end
+	L.xft_text_extent(ft_ctx, s, _mw, _mh)
+	w = _mw[0]
+	_tw_cache[s] = w
+	_th_cache[s] = _mh[0]
+	return w, _mh[0]
 end
 -- cached width-only lookup (most callers only need w); falls back to FFI
 function ctx.text_width(s)
@@ -162,14 +182,14 @@ function ctx.text_width(s)
 	if v then
 		return v
 	end
-	local w = ffi.new("int[1]")
-	L.xft_text_extent(ft_ctx, s, w, ffi.new("int[1]"))
-	v = w[0]
+	L.xft_text_extent(ft_ctx, s, _mw, _mh)
+	v = _mw[0]
 	_tw_cache[s] = v
+	_th_cache[s] = _mh[0]
 	return v
 end
 function ctx.get_line_height()
-	return L.xft_primary_line_height(ft_ctx)
+	return _line_h
 end
 
 ctx.theme = Theme.build(config)
@@ -422,11 +442,6 @@ local function reload_all()
 	I18n.init(ctx)
 	theme_dark = (config.theme_mode or "dark") ~= "light"
 
-	-- font or i18n change invalidates every cached text width
-	for k in pairs(ctx._tw_cache or {}) do
-		ctx._tw_cache[k] = nil
-	end
-
 	-- toasts are emitted after the backend reopen: a toast panel created
 	-- before lbar_close would hold a popup id from the freed ctx
 	local font_ok, font_err
@@ -443,6 +458,8 @@ local function reload_all()
 			log("font reload failed: %s", font_err)
 		end
 	end
+	-- font metrics / i18n may have changed: drop cached widths & line height
+	clear_text_caches()
 
 	L.lbar_close(Lctx)
 	local newL = L.lbar_open()
@@ -757,6 +774,9 @@ while true do
 					bar.needs_redraw = true
 				end
 			end
+		elseif t == 8 then
+			-- system tray icon set changed (dock/undock): re-layout the bar
+			bar.needs_redraw = true
 		elseif t == 1 then
 			if tgt == 1 then
 				local p = route_panel(ev, "motion")
@@ -861,6 +881,13 @@ while true do
 				p:draw()
 			end
 		end
+	end
+
+	-- flush a bar redraw requested by events (hover, click, theme change)
+	-- on the same frame for immediate feedback, instead of waiting up to
+	-- TICK_MS for Bar:tick. Idle loops cost nothing (flag stays false).
+	if bar.needs_redraw then
+		bar:draw()
 	end
 
 	-- real loop dt: fixed 16ms steps made animations and toast deadlines

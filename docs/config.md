@@ -65,6 +65,7 @@
 | `settings` | `set` | 设置面板 |
 | `wallpaper` | `wall` | 壁纸选择器 |
 | `wifi` | ssid + 信号 | wifi 面板 |
+| `tray` | 系统托盘图标 | 无面板（图标直接内嵌在栏中，显示可能为空） |
 | `hide_all` | —（纯动作） | `hide_all_windows` |
 | `move_window` | —（纯动作） | 窗口移动快捷键 |
 | `resize_window` | —（纯动作） | 窗口缩放快捷键 |
@@ -111,8 +112,10 @@ panels = {
 
 显式 `pos`（非 `auto`）优先于 bar 锚定：每次打开（包括点击 bar item）都
 落在配置的入场位置。`auto` 面板锚定到自己的 bar item。用户拖拽过的位置
-（user_pos）优先级最高，重开后保留。自由定位的面板若与可见面板重叠，
-会对角级联错开（`Panel:avoid_overlap`）。
+（user_pos）优先级最高，重开后保留。面板打开时若与可见面板重叠，自动
+挪到最近的空位（候选锚点 = 屏幕四角/中心 + 各可见面板边缘，仍无空位才
+对角级联兜底，见 `Panel:avoid_overlap`）；拖拽/缩放/内容长高后始终夹取
+在屏幕内（保留 8px 边距），底部/右侧不会被截断。
 
 `panels.<name>.anim` 优先于 `animation.style`，两者均在启动时读取。
 
@@ -130,6 +133,14 @@ animation = {
 
 `style = 'auto'` 时每个面板从自己的锚点侧滑入（bar 锚定面板沿锚点方向，
 自由面板沿 `panels.<name>.pos` 对应的边）。
+
+支持的全部取值：`auto` `slide_up` `slide_down` `slide_left`
+`slide_right` `none`。默认 `config.lua` 已覆盖全部 6 种：
+`volume` → `slide_up`（底部上滑）、`launcher` → `slide_down`（顶部下滑）、
+`color_picker` → `slide_left`（右侧左滑）、`keybinds_help` →
+`slide_right`（左侧右滑）、`ui_demo` → `none`（即时显隐）、其余 `auto`。
+覆盖情况由 `tools/plugin_test.lua` 启动时静态检查（不覆盖或取值非法即
+FAIL）。
 
 所有面板可拖拽：按住标题栏（`×` 关闭按钮除外）拖动即可。自由定位面板
 记住拖拽位置（`Panel:show`）；bar 锚定面板下次点击时重新锚定。
@@ -239,6 +250,27 @@ nitrogen > xwallpaper > hyprctl。i3/X11 经 feh/nitrogen/xwallpaper 覆盖。
 | `units` | `'c'` | `'c'` 或 `'f'` |
 | `refresh_sec` | `900` | 拉取间隔 |
 | `manual_city` | 自动定位 | 城市名字符串 |
+
+### tray（系统托盘）
+
+把"通知区域"图标（XEmbed 协议）直接内嵌到栏里。无图标时该 item 自动隐藏，
+宽度为 0。
+
+| 键 | 默认值 | 说明 |
+|---|---|---|
+| `enabled` | `true` | 是否启用托盘 |
+| `icon_size` | `20` | 图标尺寸 px（会自动限制为不超过栏高） |
+| `gap` | `6` | 图标之间的间距 px |
+
+- 仅支持经典的 **XEmbed** 系统托盘协议（`_NET_SYSTEM_TRAY_S<n>`），适用于
+  X11 应用、Wine、Java、旧版 Qt/GTK 程序；需要 **XWayland**（Wayland 会话）。
+- 原生 **SNI**（DBus `StatusNotifierItem`，多数 Electron / 现代 GTK3 应用）
+  不在该协议内，暂不显示。
+- X11 后端：图标被重 parent 进栏窗口，由 X 原生渲染，点击/滚轮直接生效。
+- Wayland 后端：图标窗口映射在屏幕外，像素拷贝进栏表面，点击通过
+  `XSendEvent` 转发给图标（部分应用的右键菜单可能不响应）。
+- 若已有其它托盘宿主（如 waybar）在运行，lbar 取得不了选择权，托盘会自动
+  保持为空且不影响栏的其它部分。
 
 ### move_window / resize_window
 
