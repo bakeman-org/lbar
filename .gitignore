@@ -4,5 +4,8 @@ lbar.so
 *.so
 lbar-cli
 lbar
-
+temp
+tmp
 *.luastatic.c
+bake.py
+lbar.bake
