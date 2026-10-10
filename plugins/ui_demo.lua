@@ -1,180 +1,41 @@
+-- plugins/ui_demo.lua — ui2 · MIUIX 组件画廊（声明式重写版）
+--
+-- 本插件即 ui2 框架的组件展示场与验收测试：
+--   容器     :column :row :card :end_           （自动 pad/gap/测量）
+--   文本     :h1 :p :small_title :hint :code
+--   基础     :button(filled/tonal/text) :icon_button(+tooltip) :fab :toolbar
+--             :badge :divider :progress :slider
+--   选择     :checkbox :radio :toggle :stepper :segmented
+--   输入     :text_field :search_bar
+--   列表     :list_item(right=arrow/switch/checkbox/radio/text)
+--             :basic_component :arrow/switch/checkbox/radio_preference
+--   导航     :tab_row :navigation_bar :navigation_rail :breadcrumb
+--             :top_app_bar
+--   颜色     :color_palette :color_picker :range_slider
+--   弹层     :dropdown :dialog :bottom_sheet（浮层吞点击，z 序自动）
+--   提示     ui2.snackbar → lbar toast
+--   结构     :each :component :if_ :unless + ui2.state 响应式
+--
+-- window ops（move/resize，i3/hyprland/panel）从旧版原样保留。
+-- 测试：luajit plugin_container.lua ui_demo
+
 local M = {}
-local Panel = require("core.panel")
+local ui2 = require("core.ui2")
 local Util = require("core.util")
 local I = require("core.i18n")
 
 local log = Util.logger("ui_demo")
 
 local XK_ESCAPE = 0xff1b
-local XK_BACKSPACE = 0xff08
-
-local TOGS = { "wifi", "bluetooth", "do not disturb" }
-local ITEMS = { "item one - click me", "item two - hover me", "item three - selected" }
-local SB_ITEMS = { "row alpha", "row beta", "row gamma", "row delta", "row epsilon", "row zeta" }
-
-local WIDGET_LINES = {
-	"buttons (filled / tonal / text) · chips · labels",
-	"slider · progress · toggle · text field",
-	"list · scrollbar · card · divider",
-	"toast notifications · panel header · close",
-}
-
-local TABS = { "controls", "lists", "windows", "inventory" }
 
 local MIN_PANEL_W = 220
 local MIN_PANEL_H = 100
 
-local function build_model(ctx, user_size)
-	local lh = ctx.get_line_height()
-	local m = {}
-	m.LH = lh
-	m.PAD = 24
-	m.W = 620
-	m.HEAD_H = lh + 26
-	m.SEC_H = lh + 6
-	m.TAB_Y = m.HEAD_H + 14
-	m.TAB_H = lh + 12
-	local y = m.TAB_Y + m.TAB_H + 16
-	m.Y0 = y
-
-	m.BTN_H = lh + 20
-	m.CHIP_H = lh + 12
-	m.TOG_H = lh + 14
-	m.TOG_STEP = m.TOG_H + 8
-	m.LIST_ROW_H = lh + 12
-	m.PAN_ROW_H = lh + 10
-
-	local cy = y
-	m.BTN_LBL_Y = cy
-	cy = cy + m.SEC_H
-	m.BTN_Y = cy
-	cy = cy + m.BTN_H + 14
-	m.CHIP_Y = cy
-	cy = cy + m.CHIP_H + 14
-	m.SL_LBL_Y = cy
-	cy = cy + m.SEC_H
-	m.SLIDER_Y = cy + 8
-	cy = cy + 8 + 22 + 14
-	m.PROG_Y = cy
-	cy = cy + 22 + 14
-	m.TOG_LBL_Y = cy
-	cy = cy + m.SEC_H
-	m.TOG_Y = cy
-	cy = cy + m.TOG_STEP * 3 + 8
-	m.TF_LBL_Y = cy
-	cy = cy + m.SEC_H
-	m.TF_Y = cy
-	m.TF_H = lh + 24
-	cy = cy + m.TF_H + 14
-	m.CONTROLS_H = cy - y
-
-	cy = y
-	m.LIST_LBL_Y = cy
-	cy = cy + m.SEC_H
-	m.LIST_Y = cy
-	cy = cy + m.LIST_ROW_H * 3 + 6
-	m.SB_LBL_Y = cy + 14
-	cy = m.SB_LBL_Y + m.SEC_H
-	m.SB_Y = cy
-	cy = cy + m.LIST_ROW_H * 3 + 6
-	m.LISTS_H = cy - y
-
-	cy = y
-	m.WID_LBL_Y = cy
-	cy = cy + m.SEC_H + #WIDGET_LINES * (lh + 6) + 10
-	m.PAN_LBL_Y = cy
-	cy = cy + m.SEC_H
-	m.PAN_Y = cy
-	local npans = 0
-	for _, kb in ipairs(ctx.config.keybinds or {}) do
-		if kb.group == "panels" and kb.action:find("^toggle_") then
-			npans = npans + 1
-		end
-	end
-	m.PAN_ROWS = math.ceil(npans / 2)
-	cy = cy + m.PAN_ROWS * m.PAN_ROW_H
-	m.INV_H = cy - y
-
-	-- windows tab: move d-pad, resize d-pad, step rows, reset
-	cy = y
-	m.MV_LBL_Y = cy
-	cy = cy + m.SEC_H
-	m.MV_P1_Y = cy
-	cy = cy + m.BTN_H + 8
-	m.MV_P2_Y = cy
-	cy = cy + m.BTN_H + 14
-	m.RZ_LBL_Y = cy
-	cy = cy + m.SEC_H
-	m.RZ_P1_Y = cy
-	cy = cy + m.BTN_H + 8
-	m.RZ_P2_Y = cy
-	cy = cy + m.BTN_H + 14
-	m.MSTEP_Y = cy
-	cy = cy + m.PAN_ROW_H
-	m.RSTEP_Y = cy
-	cy = cy + m.PAN_ROW_H
-	m.WIN_RESET_Y = cy
-	cy = cy + m.BTN_H
-	m.WINDOWS_H = cy - y
-
-	m.H = math.max(m.CONTROLS_H, m.LISTS_H, m.INV_H, m.WINDOWS_H) + y + 20
-	if user_size then
-		m.W = math.max(m.W, user_size.w)
-		m.H = math.max(m.H, user_size.h)
-	end
-	return m
-end
-
-local function draw_controls(p)
-	local m, ctx, ui, T = p.m, p.ctx, p.ui, p.ctx.theme
-	local lh, PAD, W = m.LH, m.PAD, m.W
-	local inner = W - PAD * 2
-
-	ui:label(PAD, m.BTN_LBL_Y, I.t("buttons"), T.hint)
-	local bw = math.floor((inner - 24) / 3)
-	if ui:id_button("demo_fill", PAD, m.BTN_Y, bw, m.BTN_H, I.t("Filled"), { filled = true }) then
-		ctx.notify(I.t("filled button clicked"), { style = "success" })
-	end
-	if ui:id_button("demo_tonal", PAD + bw + 12, m.BTN_Y, bw, m.BTN_H, I.t("Tonal"), { tonal = true }) then
-		ctx.notify(I.t("tonal button clicked"), { style = "info" })
-	end
-	if ui:id_button("demo_text", PAD + (bw + 12) * 2, m.BTN_Y, bw, m.BTN_H, I.t("Text"), {}) then
-		ctx.notify(I.t("text button clicked"))
-	end
-
-	local chips = { "chip alpha", "chip beta", "chip gamma" }
-	local cx = PAD
-	for i, c0 in ipairs(chips) do
-		local c = I.t(c0)
-		local cw = ctx.text_width(c) + 28
-		if ui:id_button("demo_chip" .. i, cx, m.CHIP_Y, cw, m.CHIP_H, c, { tonal = true, radius = math.floor(m.CHIP_H / 2) }) then
-			ctx.notify(I.t("chip: %s", c), { style = "info" })
-		end
-		cx = cx + cw + 10
-	end
-
-	ui:label(PAD, m.SL_LBL_Y, I.t("slider  %.0f%%", M.val * 100), T.hint)
-	local nv, ch = ui:slider("demo_slider", PAD, m.SLIDER_Y, inner, M.val)
-	if ch then
-		M.val = nv
-	end
-
-	ui:progress(PAD, m.PROG_Y, inner, 8, M.val * 100)
-
-	ui:label(PAD, m.TOG_LBL_Y, I.t("toggles"), T.hint)
-	for i = 1, 3 do
-		local ry = m.TOG_Y + (i - 1) * m.TOG_STEP
-		ui:label(PAD, ry + math.floor((m.TOG_H - lh) / 2), I.t(TOGS[i]), T.on_var)
-		local nv2, ch2 = ui:toggle("demo_tog" .. i, W - PAD - 72, ry, 72, m.TOG_H, M.togs[i])
-		if ch2 then
-			M.togs[i] = nv2
-			ctx.notify(I.t(nv2 and "%s on" or "%s off", I.t(TOGS[i])), { style = "info" })
-		end
-	end
-
-	ui:label(PAD, m.TF_LBL_Y, I.t("text field  (click, then type)"), T.hint)
-	ui:text_field("demo_tf", PAD, m.TF_Y, inner, m.TF_H, M.text, { placeholder = I.t("type here…") })
-end
+local COLORS = {
+	0x1a1a1a, 0x444444, 0x888888, 0xcccccc, 0xffffff,
+	0xdc322f, 0xb58900, 0x859900, 0x268bd2, 0x6c71c4,
+	0xd33682, 0x2aa198,
+}
 
 -- ------------------------------------------------------------ window ops
 -- move/resize for the focused external window (i3/hyprland) or the active
@@ -301,188 +162,228 @@ local function defer_win(ctx, fn)
 	M.pending_action = fn
 end
 
-local function draw_windows(p)
-	local m, ctx, ui, T = p.m, p.ctx, p.ui, p.ctx.theme
-	local lh, PAD, W = m.LH, m.PAD, m.W
-	local inner = W - PAD * 2
-	local btn_w = math.floor((inner - 2 * 8) / 3)
-	local tonal = { tonal = true, bg = T.surface_hi }
+-- ------------------------------------------------------------ 组件 tab
 
-	ui:label(PAD, m.MV_LBL_Y, I.t("move window"), T.hint)
-	if ui:id_button("mv_up", PAD + btn_w + 8, m.MV_P1_Y, btn_w, m.BTN_H, "↑", tonal) then
-		defer_win(ctx, function()
-			win_move(ctx, 0, -M.mv_step)
-		end)
-	end
-	if ui:id_button("mv_left", PAD, m.MV_P2_Y, btn_w, m.BTN_H, "←", tonal) then
-		defer_win(ctx, function()
-			win_move(ctx, -M.mv_step, 0)
-		end)
-	end
-	if ui:id_button("mv_down", PAD + btn_w + 8, m.MV_P2_Y, btn_w, m.BTN_H, "↓", tonal) then
-		defer_win(ctx, function()
-			win_move(ctx, 0, M.mv_step)
-		end)
-	end
-	if ui:id_button("mv_right", PAD + (btn_w + 8) * 2, m.MV_P2_Y, btn_w, m.BTN_H, "→", tonal) then
-		defer_win(ctx, function()
-			win_move(ctx, M.mv_step, 0)
-		end)
-	end
-
-	ui:label(PAD, m.RZ_LBL_Y, I.t("resize window"), T.hint)
-	if ui:id_button("rz_narrow", PAD, m.RZ_P1_Y, btn_w, m.BTN_H, "←", tonal) then
-		defer_win(ctx, function()
-			win_resize(ctx, -M.rz_step, 0)
-		end)
-	end
-	if ui:id_button("rz_tall", PAD + btn_w + 8, m.RZ_P1_Y, btn_w, m.BTN_H, "↑", tonal) then
-		defer_win(ctx, function()
-			win_resize(ctx, 0, M.rz_step)
-		end)
-	end
-	if ui:id_button("rz_wide", PAD + (btn_w + 8) * 2, m.RZ_P1_Y, btn_w, m.BTN_H, "→", tonal) then
-		defer_win(ctx, function()
-			win_resize(ctx, M.rz_step, 0)
-		end)
-	end
-	if ui:id_button("rz_short", PAD + btn_w + 8, m.RZ_P2_Y, btn_w, m.BTN_H, "↓", tonal) then
-		defer_win(ctx, function()
-			win_resize(ctx, 0, -M.rz_step)
-		end)
-	end
-
-	local rows = {
-		{ y = m.MSTEP_Y, label = I.t("move step px"), value = string.format("%d px", M.mv_step) },
-		{ y = m.RSTEP_Y, label = I.t("resize step px"), value = string.format("%d px", M.rz_step) },
-	}
-	for _, r in ipairs(rows) do
-		p:rrect(PAD, r.y, inner, m.PAN_ROW_H, 14, T.surface)
-		local ty = r.y + math.floor((m.PAN_ROW_H - lh) / 2)
-		p:text(PAD + 16, ty, r.label, T.on_var)
-		local vw = ctx.text_width(r.value)
-		p:text(W - PAD - 16 - vw, ty, r.value, T.hint)
-	end
-
-	if ui:id_button("win_reset", PAD, m.WIN_RESET_Y, inner, m.BTN_H, I.t("reset panel"), { filled = true }) then
-		defer_win(ctx, function()
-			win_reset(ctx)
-		end)
-	end
+-- Tab 1 · basic：按钮族 / 图标 / 进度 / 徽标
+local function TabBasic(b, opts)
+	local st = opts.state
+	b:small_title("buttons")
+		:row({ gap = 8 })
+			:button({ label = "Filled", filled = true,
+				action = function() ui2.snackbar(opts.ctx, "filled button clicked", { style = "success" }) end })
+			:button({ label = "Tonal", tonal = true,
+				action = function() ui2.snackbar(opts.ctx, "tonal button clicked", { style = "info" }) end })
+			:button({ label = "Text",
+				action = function() ui2.snackbar(opts.ctx, "text button clicked") end })
+		:end_()
+		:small_title("icon · fab · toolbar · tooltip")
+		:row({ gap = 10 })
+			:icon_button({ icon = "gear", tooltip = "settings",
+				action = function() ui2.snackbar(opts.ctx, "icon button") end })
+			:icon_button({ icon = "close", tooltip = "close",
+				action = function() ui2.snackbar(opts.ctx, "icon button") end })
+			:fab({ icon = "plus",
+				action = function() st.fab_n = st.fab_n + 1 end })
+			:row({ pad = 0, gap = 0 })
+				:badge({})
+				:badge({ count = function() return st.fab_n end })
+			:end_()
+		:end_()
+		:toolbar({ icons = { "star", "heart", "bell", "wifi" },
+			on_select = function(i) ui2.snackbar(opts.ctx, "toolbar item " .. i) end })
+		:small_title("slider · progress")
+		:p({ value = function() return string.format("slider  %.0f%%", st.val * 100) end, color = "hint" })
+		:slider({ value = function() return st.val end,
+			on_change = function(v) st.val = v end })
+		:progress({ pct = function() return st.val * 100 end })
+		:progress({ pct = 72, color = "good", h = 10 })
+	:end_()
 end
 
-local function draw_lists(p)
-	local m, ctx, ui, T = p.m, p.ctx, p.ui, p.ctx.theme
-	local lh, PAD, W = m.LH, m.PAD, m.W
-	local inner = W - PAD * 2
-
-	ui:label(PAD, m.LIST_LBL_Y, I.t("list"), T.hint)
-	for i = 1, 3 do
-		local ry = m.LIST_Y + (i - 1) * m.LIST_ROW_H
-		local sel = M.sel == i
-		local hover = ui:hover(PAD, ry, inner, m.LIST_ROW_H)
-		local bg = sel and T.secondary_ctr or hover and T.surface_hover or T.surface_hi
-		p:rrect(PAD, ry, inner, m.LIST_ROW_H, 10, bg)
-		p:text(PAD + 16, ry + math.floor((m.LIST_ROW_H - lh) / 2),
-			I.t(ITEMS[i]), sel and T.primary or T.on_surface)
-		if ui:clicked(PAD, ry, inner, m.LIST_ROW_H) then
-			M.sel = i
-			ctx.notify(I.t("selected: %s", I.t(ITEMS[i])), { style = "info" })
-		end
-	end
-
-	ui:label(PAD, m.SB_LBL_Y, I.t("scrollbar  (drag the thumb)"), T.hint)
-	local vis = math.max(1, math.min(#SB_ITEMS,
-		math.floor((m.H - m.SB_Y - 8) / m.LIST_ROW_H)))
-	local max_off = math.max(0, #SB_ITEMS - vis)
-	local list_w = inner - 22
-	local new_off = ui:scrollbar("demo_sb", PAD + list_w + 8, m.SB_Y, 8, m.LIST_ROW_H * vis,
-		M.sb_off, max_off)
-	if new_off ~= M.sb_off then
-		M.sb_off = new_off
-	end
-	for i = 1, vis do
-		local li = M.sb_off + i
-		if li > #SB_ITEMS then
-			break
-		end
-		local ry = m.SB_Y + (i - 1) * m.LIST_ROW_H
-		p:rrect(PAD, ry, list_w, m.LIST_ROW_H, 10, T.surface_hi)
-		p:text(PAD + 16, ry + math.floor((m.LIST_ROW_H - lh) / 2), I.t(SB_ITEMS[li]), T.on_var)
-	end
+-- Tab 2 · lists：list_item 全变体 / 搜索 / 面包屑
+local function TabLists(b, opts)
+	local st = opts.state
+	b:small_title("list items")
+		:list_item({ title = "wifi", summary = "connected · home 5G", icon = "wifi", right = "switch",
+			value = function() return st.togs[1] end,
+			on_change = function(v) st.togs[1] = v end })
+		:list_item({ title = "bluetooth", summary = "2 devices", icon = "bluetooth", right = "switch",
+			value = function() return st.togs[2] end,
+			on_change = function(v) st.togs[2] = v end })
+		:list_item({ title = "do not disturb", icon = "moon", right = "switch",
+			value = function() return st.togs[3] end,
+			on_change = function(v) st.togs[3] = v end })
+		:divider({})
+		:list_item({ title = "storage", right = "128G / 256G" })
+		:list_item({ title = "about tablet", right = "arrow",
+			on_click = function() ui2.snackbar(opts.ctx, "about clicked", { style = "info" }) end })
+		:small_title("search")
+		:search_bar({ value = function() return st.search end,
+			placeholder = "search settings…",
+			on_change = function(v) st.search = v end,
+			on_submit = function(v) ui2.snackbar(opts.ctx, "search: " .. v) end })
+		:small_title("breadcrumb")
+		:breadcrumb({ segments = { "settings", "display", "brightness" },
+			active = 3,
+			on_change = function(i) ui2.snackbar(opts.ctx, "crumb " .. i) end })
+	:end_()
 end
 
-local function draw_inventory(p)
-	local m, ctx, ui, T = p.m, p.ctx, p.ui, p.ctx.theme
-	local lh, PAD, W = m.LH, m.PAD, m.W
+-- Tab 3 · select：选择器 / 步进 / 分段 / 导航 / 颜色
+local function TabSelect(b, opts)
+	local st = opts.state
+	b:small_title("checkbox · radio")
+		:row({ gap = 12 })
+			:checkbox({ value = function() return st.check end,
+				on_change = function(v) st.check = v end })
+			:p({ value = "notify" })
+			:radio({ value = function() return st.radio_sel == 1 end,
+				on_change = function() st.radio_sel = 1 end })
+			:p({ value = "mode A" })
+			:radio({ value = function() return st.radio_sel == 2 end,
+				on_change = function() st.radio_sel = 2 end })
+			:p({ value = "mode B" })
+		:end_()
+		:small_title("list-item selection")
+		:list_item({ title = "sync forever", icon = "sync", right = "checkbox",
+			value = function() return st.check end,
+			on_change = function(v) st.check = v end })
+		:list_item({ title = "battery saver", icon = "zap", right = "radio",
+			value = function() return st.radio_sel == 1 end,
+			on_change = function() st.radio_sel = 1 end })
+		:small_title("stepper (number picker)")
+		:row({ gap = 8 })
+			:stepper({ value = function() return st.stepper_v end,
+				on_change = function(v) st.stepper_v = v end })
+			:stepper({ value = function() return st.stepper_v * 10 end, step = 10,
+				on_change = function(v) st.stepper_v = math.floor(v / 10) end })
+		:end_()
+		:small_title("segmented")
+		:segmented({ items = { "alpha", "beta", "gamma" },
+			active = function() return st.seg end,
+			on_change = function(i) st.seg = i end })
+		:small_title("navigation bar")
+		:navigation_bar({
+			items = { { icon = "home", label = "home" }, { icon = "apps", label = "apps" },
+				{ icon = "gear", label = "set" } },
+			active = function() return st.nav end,
+			on_change = function(i) st.nav = i end })
+		:small_title("color palette")
+		:color_palette({ colors = COLORS,
+			value = function() return st.color end,
+			on_change = function(c) st.color = c end })
+		:row({ gap = 8 })
+			:p({ value = "picked:", color = "hint" })
+			:badge({ count = 1, color = function() return st.color end })
+			:button({ label = "snackbar demo", tonal = true,
+				action = function() ui2.snackbar(opts.ctx, "hello from ui2", { style = "info" }) end })
+		:end_()
+	:end_()
+end
 
-	ui:label(PAD, m.WID_LBL_Y, I.t("widgets"), T.hint)
-	for i, wln in ipairs(WIDGET_LINES) do
-		p:text(PAD, m.WID_LBL_Y + m.SEC_H + (i - 1) * (lh + 6), I.t(wln), T.on_var)
-	end
+-- Tab 4 · windows：move/resize d-pad（window ops 保留）
+local function TabWindows(b, opts)
+	local ctx = opts.ctx
+	local st = opts.state
+	local mv, rz = M.mv_step, M.rz_step
+	b:small_title("move window")
+		:row({ gap = 8, align = "center" })
+			:icon_button({ icon = "arrow_up", action = function() defer_win(ctx, function() win_move(ctx, 0, -mv) end) end })
+			:icon_button({ icon = "arrow_down", action = function() defer_win(ctx, function() win_move(ctx, 0, mv) end) end })
+			:icon_button({ icon = "arrow_left", action = function() defer_win(ctx, function() win_move(ctx, -mv, 0) end) end })
+			:icon_button({ icon = "arrow_right", action = function() defer_win(ctx, function() win_move(ctx, mv, 0) end) end })
+		:end_()
+		:small_title("resize window")
+		:row({ gap = 8, align = "center" })
+			:icon_button({ icon = "expand", tooltip = "wider", action = function() defer_win(ctx, function() win_resize(ctx, rz, 0) end) end })
+			:icon_button({ icon = "shrink", tooltip = "narrower", action = function() defer_win(ctx, function() win_resize(ctx, -rz, 0) end) end })
+			:icon_button({ icon = "chevron_up", tooltip = "taller", action = function() defer_win(ctx, function() win_resize(ctx, 0, rz) end) end })
+			:icon_button({ icon = "chevron_down", tooltip = "shorter", action = function() defer_win(ctx, function() win_resize(ctx, 0, -rz) end) end })
+		:end_()
+		:list_item({ title = "move step", right = tostring(mv) .. " px" })
+		:list_item({ title = "resize step", right = tostring(rz) .. " px" })
+		:button({ label = "reset panel", filled = true,
+			action = function() defer_win(ctx, function() win_reset(ctx) end) end })
+		:p({ value = "wm backend: " .. tostring(M.wm or "panel-only"), color = "hint" })
+	:end_()
+end
 
-	ui:label(PAD, m.PAN_LBL_Y, I.t("panels  (keybind or click the bar item)"), T.hint)
-	local col_w = math.floor((W - PAD * 2) / 2)
-	local row, col = 0, 0
+-- Tab 5 · extras：Miuix 补齐组件（top bar / rail / range / picker / 弹层）
+local function TabExtras(b, opts)
+	local ctx = opts.ctx
+	local st = opts.state
+	b:small_title("top app bar")
+		:top_app_bar({ title = "Settings", actions = { "search", "gear" },
+			on_action = function(i, name) ui2.snackbar(ctx, "action: " .. name, { style = "info" }) end })
+		:small_title("navigation rail")
+		:navigation_rail({
+			items = { { icon = "home", label = "home" }, { icon = "wifi", label = "net" },
+				{ icon = "music", label = "media" } },
+			active = function() return st.rail end,
+			on_change = function(i) st.rail = i end })
+		:small_title("range slider")
+		:p({ value = function() return string.format("range  %d – %d px",
+				st.rlo, st.rhi) end, color = "hint" })
+		:range_slider({ value_low = function() return st.rlo end,
+			value_high = function() return st.rhi end,
+			min = 0, max = 200,
+			on_change = function(lo, hi) st.rlo, st.rhi = math.floor(lo), math.floor(hi) end })
+		:small_title("color picker")
+		:row({ gap = 10, align = "center" })
+			:card({ pad = 6 })
+				:color_picker({ hue = function() return st.hue end,
+					bri = function() return st.bri end,
+					on_change = function(h, br, c) st.hue, st.bri, st.cp = h, br, c end })
+			:end_()
+			:badge({ count = 1, color = function() return st.cp end })
+		:end_()
+		:small_title("dropdown")
+		:dropdown({ items = { "light", "dark", "auto", "system" },
+			value = function() return st.dd end,
+			on_select = function(it) st.dd = it
+				ui2.snackbar(ctx, "selected: " .. it, { style = "success" }) end })
+		:small_title("dialog · bottom sheet")
+		:row({ gap = 8 })
+			:button({ label = "dialog", tonal = true,
+				action = function() st.dlg = true end })
+			:button({ label = "bottom sheet", tonal = true,
+				action = function() st.sheet = true end })
+		:end_()
+	:dialog({ open = function() return st.dlg end, on_open = function(v) st.dlg = v end,
+		title = "delete item?", text = "this action cannot be undone",
+		buttons = { { label = "cancel", tonal = true }, { label = "delete", filled = true,
+			action = function() ui2.snackbar(ctx, "deleted", { style = "error" }) end } } })
+	:bottom_sheet({ open = function() return st.sheet end, on_open = function(v) st.sheet = v end,
+		title = "share to", items = { "copy link", "bluetooth", "nearby", "mail" },
+		on_select = function(it) ui2.snackbar(ctx, "share: " .. it, { style = "info" }) end })
+	:end_()
+end
+
+-- Tab 6 · panels：键位清单（数据驱动 :each）
+local function TabPanels(b, opts)
+	local ctx = opts.ctx
+	local kbs = {}
 	for _, kb in ipairs(ctx.config.keybinds or {}) do
 		if kb.group == "panels" and kb.action:find("^toggle_") then
-			local pname = kb.action:sub(8)
-			local x = PAD + col * col_w
-			local y2 = m.PAN_Y + row * m.PAN_ROW_H
-			p:text(x, y2, pname, T.on_var)
-			local hint = Util.keybind_hint(ctx, kb.action)
-			p:text(x + col_w - ctx.text_width(hint), y2, hint, T.hint)
-			col = col + 1
-			if col == 2 then
-				col = 0
-				row = row + 1
-			end
+			kbs[#kbs + 1] = { name = kb.action:sub(8), hint = Util.keybind_hint(ctx, kb.action) }
 		end
 	end
+	b:small_title("panels · keybind or click bar item")
+		:card({ pad = 10, gap = 2 })
+			:each(function() return kbs end, function(kb, _, bb)
+				bb:list_item({ title = kb.name, right = kb.hint })
+			end)
+			:if_(#kbs == 0, function(bb)
+				bb:p({ value = "no panel keybinds in config.lua", color = "hint" })
+			end)
+		:end_()
+		:p({ value = "ui2: declarative · reactive · miuix-style", color = "hint" })
+	:end_()
 end
 
-local function do_draw(p)
-	local m = p.m
-	local ctx = p.ctx
-	local T = ctx.theme
+-- ------------------------------------------------------------ init
 
-	-- self-heal on resize: model follows the live surface so inner widths
-	-- and the scrollbar demo clamp to the real panel
-	m.W, m.H = p.w, p.h
-	local lh, PAD, W = m.LH, m.PAD, m.W
-
-	local title = I.t("UI Components")
-	local hy = p:draw_header(title, Util.keybind_hint(ctx, "toggle_ui_demo"), PAD)
-	local tag = tostring(ctx.theme.name or "theme")
-	local tag_w = ctx.text_width(tag)
-	local tag_x = p.rect_close.x - 12 - tag_w
-	if tag_x > PAD + ctx.text_width(title) + 12 then
-		p:text(tag_x, hy, tag, T.hint)
-	end
-
-	local ui = p.ui
-	local labels, active = {}, 1
-	for i, t in ipairs(TABS) do
-		labels[i] = I.t(t)
-		if M.tab == t then
-			active = i
-		end
-	end
-	local sel = ui:segmented(PAD, m.TAB_Y, W - PAD * 2, m.TAB_H, labels, active)
-	if sel > 0 then
-		M.tab = TABS[sel]
-	end
-
-	if M.tab == "controls" then
-		draw_controls(p)
-	elseif M.tab == "lists" then
-		draw_lists(p)
-	elseif M.tab == "windows" then
-		draw_windows(p)
-	else
-		draw_inventory(p)
-	end
-end
+local TAB_NAMES = { "basic", "lists", "select", "extras", "windows", "panels" }
 
 function M.tick(ctx, dt)
 	if M.pending_action then
@@ -514,15 +415,8 @@ end
 function M.init(ctx)
 	M.ctx = ctx
 	M.ready = true
-	M.val = 0.42
-	M.togs = { true, false, true }
-	M.text = ""
-	M.sel = 0
-	M.tab = "controls"
-	M.sb_off = 0
 	M.pending_action = nil
 
-	-- merged window ops (former move_window / resize_window plugins)
 	local mvcfg = ctx.config.move_window or {}
 	local rzcfg = ctx.config.resize_window or {}
 	M.mv_step = math.max(1, tonumber(mvcfg.step) or 30)
@@ -567,55 +461,62 @@ function M.init(ctx)
 		end)
 	end
 
-	local panel = Panel.new(ctx, {
-		name = "ui_demo",
-		radius = 16,
-		bg = ctx.theme.bg,
-		kbd = true,
-		model_fn = build_model,
-		size_fn = function(c)
-			local m = build_model(c)
-			return m.W, m.H
-		end,
-		draw = do_draw,
-		on_press = function(p, mx, my, btn)
-			if btn == 1 and p:header_hit(mx, my) then
-				p:hide()
-				return
-			end
-		end,
-		on_key = function(p, sym, text, ctrl)
-			if sym == XK_ESCAPE then
-				p:hide()
-				return true
-			end
-			if not p.ui:has_focus("demo_tf") then
-				return false
-			end
-			if ctrl then
-				return true
-			end
-			if sym == XK_BACKSPACE then
-				local j = Util.utf8_prev(M.text, #M.text + 1)
-				M.text = M.text:sub(1, j - 1)
-				return true
-			end
-			if sym and sym >= 32 and text and #text > 0 then
-				M.text = M.text .. text
-				return true
-			end
-			return false
-		end,
+	local st = ui2.state({
+		tab = 1,
+		val = 0.42,
+		togs = { true, false, true },
+		check = false,
+		radio_sel = 2,
+		stepper_v = 5,
+		seg = 1,
+		nav = 1,
+		color = COLORS[9],
+		fab_n = 0,
+		search = "",
+		rail = 1,
+		rlo = 40,
+		rhi = 140,
+		hue = 210,
+		bri = 0.85,
+		cp = 0x2196f3,
+		dd = "auto",
+		dlg = false,
+		sheet = false,
 	})
-	if not panel then
-		log("panel create failed")
-		return
-	end
-	panel.m = build_model(ctx)
-	M.panel = panel
-	ctx.register_panel("ui_demo", panel)
 
-	log("ready")
+	local b = ui2.panel(ctx, {
+		name = "ui_demo",
+		title = I.t("UI Components"),
+		hint = Util.keybind_hint(ctx, "toggle_ui_demo"),
+		width = 480,
+	})
+
+	local tab_opts = { state = st, ctx = ctx }
+
+	-- 每个 tab 一个 visible column：st.tab 变化 → 布局实时切换
+	local tabs = { TabBasic, TabLists, TabSelect, TabExtras, TabWindows, TabPanels }
+	b:column({ pad = 20, gap = 12 })
+		:tab_row({
+			tabs = TAB_NAMES,
+			active = function() return st.tab end,
+			on_change = function(i) st.tab = i end,
+		})
+		:divider({})
+	for i, TabFn in ipairs(tabs) do
+		b:column({ pad = 0, gap = 12, visible = function() return st.tab == i end })
+			:component(TabFn, tab_opts)
+		:end_()
+	end
+	b:on_key(XK_ESCAPE, function(p) p:hide() end)
+
+	ui2.reactive(st, b, ctx)
+
+	M.panel = b.panel
+	M.panel.b = b
+	M.state = st
+	ctx.register_panel("ui_demo", b.panel)
+
+	log("ready (ui2 · miuix gallery)")
 end
 
 function M.shutdown()

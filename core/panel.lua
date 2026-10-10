@@ -223,6 +223,12 @@ function Panel:fit()
 	return self:resize(w, h)
 end
 
+-- drop the user's manual size and return to the natural auto-fit size
+function Panel:reset_size()
+	self.user_size = nil
+	return self:fit()
+end
+
 function Panel:move_to(x, y)
 	local ctx = self.ctx
 	x = clamp(math.floor(x), 8, math.max(8, ctx.scr_w - 8 - self.w))
@@ -800,6 +806,23 @@ end
 
 function Panel:on_motion(mx, my, rx, ry)
 	local d = self._drag
+	local e = self._edge
+	if e then
+		local nw, nh = self.w, self.h
+		if e.mode == "r" or e.mode == "rb" then
+			nw = math.max(120, e.w0 + (mx - e.mx0))
+		end
+		if e.mode == "b" or e.mode == "rb" then
+			nh = math.max(80, e.h0 + (my - e.my0))
+		end
+		if nw ~= self.w or nh ~= self.h then
+			e.moved = true
+			self.user_size = { w = nw, h = nh }
+			self:live_resize(nw, nh)
+		end
+		self.mx, self.my = mx, my
+		return
+	end
 	if d then
 		if not d.moved and (math.abs(mx - d.mx0) > 2 or math.abs(my - d.my0) > 2) then
 			d.moved = true
@@ -856,8 +879,32 @@ function Panel:on_press(btn, mx, my, rx, ry)
 		self:hide()
 		return true
 	end
-	-- drag from the header strip (anywhere except the close button)
+	-- edge resize hot zone: right / bottom edge + bottom-right corner
+	local EDGE = 10
+	if btn == 1 and self.opts.edge_resize ~= false
+		and mx >= 0 and my >= 0 and mx < self.w and my < self.h then
+		local right = mx >= self.w - EDGE
+		local bottom = my >= self.h - EDGE
+		local mode = (right and bottom and "rb") or (right and "r") or (bottom and "b")
+		if mode then
+			self._edge = { mode = mode, w0 = self.w, h0 = self.h, mx0 = mx, my0 = my, moved = false }
+			ctx._drag_panel = self
+			return true
+		end
+	end
+	-- drag from the header strip (anywhere except the close button);
+	-- double-click the header to drop user_size and auto-fit again
 	if btn == 1 and self.draggable and self.header_h and my < self.header_h then
+		local now = ctx._now_ms or 0
+		if self._hdr_ts and now - self._hdr_ts < 400 then
+			self._hdr_ts = nil
+			if self.user_size then
+				self:reset_size()
+				return true
+			end
+		else
+			self._hdr_ts = now
+		end
 		self._drag = { sx = self.sx, sy = self.sy, mx0 = mx, my0 = my, moved = false }
 		ctx._drag_panel = self
 	end
@@ -890,6 +937,10 @@ function Panel:on_release(btn, mx, my, rx, ry)
 	end
 	local d = self._drag
 	local moved = d and d.moved
+	if self._edge then
+		moved = moved or self._edge.moved
+		self._edge = nil
+	end
 	self._drag = nil
 	if self.ui and btn == 1 then
 		self.ui:release(mx, my)

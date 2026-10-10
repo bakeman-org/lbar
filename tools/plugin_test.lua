@@ -358,7 +358,6 @@ local function test_plugin(name)
 	return true
 end
 
--- ────────────────────────────────────────────────────────────── main
 -- 动画配置覆盖检查：panels.*.anim 与 animation.style 只允许支持取值，
 -- 且默认配置应覆盖全部 6 种（auto/slide_up/slide_down/slide_left/slide_right/none）
 local ANIM_SUPPORTED = { "auto", "slide_up", "slide_down", "slide_left", "slide_right", "none" }
@@ -420,5 +419,406 @@ end
 print(string.format("\n%d/%d plugins passed", pass, #list))
 for _, f in ipairs(failures) do
 	print("  " .. f)
+end
+
+-- ── ui2 框架单测：state 响应式 / 树构建 / measure / each / component / if_ ──
+local n0 = #failures
+local ui2 = require("core.ui2")
+
+local st = ui2.state({ count = 0, name = "x" })
+local sub_n = 0
+st:subscribe(function() sub_n = sub_n + 1 end)
+st.count = 1
+st.name = "y"
+st:set({ a = 1, b = 2 })
+if sub_n ~= 4 or st.count ~= 1 or st.a ~= 1 then
+	failures[#failures + 1] = "ui2: state 响应式订阅失败"
+end
+
+-- ── ui2 visible 翻转防护：render 中途 state 变更 → 未 measure 子树被画 ──
+-- （真实容器点击 tab 曾触发 "arithmetic on nil" 布局错误）
+do
+	local vctx = new_ctx()
+	local vst = ui2.state({ on = false })
+	local okv, vb = pcall(ui2.panel, vctx, { name = "ui2vis", title = "V" })
+	if not okv or not vb then
+		failures[#failures + 1] = "ui2 visible: panel 构建失败"
+	else
+		ui2.reactive(vst, vb, vctx)
+		vb:column({ pad = 8 })
+			:button({ label = "go", action = function() vst.on = true end })
+			:column({ pad = 8, visible = function() return vst.on end })
+				:top_app_bar({ title = "t", actions = { "gear" } })
+				:range_slider({ value_low = 10, value_high = 50 })
+			:end_()
+		:end_()
+		local vp = vb.panel
+		vp:show()
+		vp:draw()
+		local vui = vp.ui
+		do
+			-- 绕过 Panel:draw 的 pcall（它会吞 render 错误），直接暴露
+			local okr, errr = xpcall(function()
+				vb:render(vp)
+			end, debug.traceback)
+			if not okr then
+				failures[#failures + 1] = "ui2 visible: render 报错: " .. tostring(errr)
+			end
+		end
+		-- Panel:draw 内部 pcall 会吞掉 opts.draw 的错误并写 ctx.log：
+		-- 拦截 log 抓 "draw error"，否则 nil 布局错误对测试不可见
+		local draw_errors = {}
+		vctx.log = function(fmt, ...)
+			local s = string.format(fmt, ...)
+			if s:find("draw error", 1, true) then
+				draw_errors[#draw_errors + 1] = s
+			end
+		end
+		-- release 命中 button：render 中翻转 visible，未 measure 的
+		-- top_app_bar/range_slider 子树立即被绘制（无 nil 布局错误 + 内容可见）
+		local hit_btn = false
+		for y = 40, 120, 4 do
+			vst.on = false
+			vp:draw()
+			-- press 帧（id_button 捕获 active_id）→ release 帧（触发 action）
+			vui.mx, vui.my = 30, y
+			vui.mdown = true
+			pcall(vp.draw, vp)
+			vui.mdown = false
+			vui.mrelease = { x = 30, y = y }
+			pcall(vp.draw, vp)
+			vui.mrelease = nil
+			if vst.on then
+				hit_btn = true
+				break
+			end
+		end
+		vctx.log = nil
+		if #draw_errors > 0 then
+			failures[#failures + 1] = "ui2 visible: render 中途翻转报错: " .. draw_errors[1]
+		elseif not hit_btn then
+			failures[#failures + 1] = "ui2 visible: button action 未触发（坐标未命中？）"
+		end
+		vp:hide()
+	end
+end
+
+local uctx = new_ctx()
+local okb, b = pcall(ui2.panel, uctx, { name = "ui2t", title = "T" })
+if not okb or not b then
+	failures[#failures + 1] = "ui2: panel 构建失败: " .. tostring(b)
+else
+	b:column({ pad = 0, gap = 0 })
+		:h1("H1")
+		:p("body")
+		:row({ gap = 4 })
+			:text("a")
+			:text("bb")
+		:end_()
+		:each({ "x", "y", "z" }, function(item, _, bb)
+			bb:p(item)
+		end)
+		:if_(true, function(bb) bb:p("yes") end)
+		:if_(false, function(bb) bb:p("no") end)
+		:unless(false, function(bb) bb:p("unless") end)
+	:end_()
+	local col = b.children[1]
+	if #col.children ~= 8 then
+		failures[#failures + 1] = "ui2: 树节点数错误（期望 8，得 " .. #col.children .. "）"
+	end
+	if col.children[3].kind ~= "row" or #col.children[3].children ~= 2 then
+		failures[#failures + 1] = "ui2: :row 嵌套结构错误"
+	end
+	if col.children[4].opts.value ~= "x" then
+		failures[#failures + 1] = "ui2: :each 展开顺序错误"
+	end
+	local m = b:measure()
+	-- h1(30) + p(18) + row(34) + 3*each(54) + if(18) + unless(18)
+	if m.H ~= 172 then
+		failures[#failures + 1] = "ui2: measure 高度错误（期望 172，得 " .. m.H .. "）"
+	end
+
+	local function ListItem(b2, opts)
+		b2:row({ pad = 0, gap = 4 })
+			:p({ value = opts.label })
+		:end_()
+	end
+	local b2 = ui2.panel(uctx, { name = "ui2t2" })
+	b2:column({ pad = 0, gap = 0 })
+		:component(ListItem, { label = "first" })
+		:component(ListItem, { label = "second" })
+	:end_()
+	if #b2.children[1].children ~= 2 then
+		failures[#failures + 1] = "ui2: :component 复用展开数量错误"
+	end
+end
+
+if #failures == n0 then
+	print("ui2 framework: state / tree / measure / each / component / if_ ok")
+end
+
+-- ── ui2 MIUIX 部件单测：全部部件 measure + render 干跑 ──
+local n1 = #failures
+do
+	local st2 = ui2.state({ tab = 1, check = false, v = 5, color = 0x123456 })
+	local mctx = new_ctx()
+	local mb, mberr = pcall(ui2.panel, mctx, { name = "ui2miuix", title = "T" })
+	if not mb or not mberr then
+		failures[#failures + 1] = "ui2 miuix: panel 构建失败: " .. tostring(mberr)
+	else
+		local okm, errm = pcall(function()
+			mberr:column({ pad = 12, gap = 10 })
+				:small_title("basic")
+				:row({ gap = 8 })
+					:checkbox({ value = function() return st2.check end })
+					:radio({ value = function() return st2.tab == 1 end })
+					:badge({})
+					:badge({ count = 9 })
+				:end_()
+				:row({ gap = 8 })
+					:icon_button({ icon = "gear", tooltip = "settings" })
+					:fab({ icon = "plus" })
+				:end_()
+				:toolbar({ icons = { "star", "heart", "bell" } })
+				:small_title("selection")
+				:list_item({ title = "wifi", summary = "connected", icon = "wifi", right = "switch",
+					value = function() return st2.check end })
+				:switch_preference({ title = "wifi pref", icon = "wifi",
+					value = function() return st2.check end })
+				:arrow_preference({ title = "about" })
+				:checkbox_preference({ title = "check pref",
+					value = function() return st2.check end })
+				:radio_preference({ title = "radio pref", value = true })
+				:basic_component({ title = "basic comp", icon = "folder" })
+				:list_item({ title = "version", right = "v2.0" })
+				:stepper({ value = function() return st2.v end })
+				:small_title("navigation")
+				:top_app_bar({ title = "Top", actions = { "search", "gear" } })
+				:breadcrumb({ segments = { "home", "docs", "ui2" }, active = 3 })
+				:tab_row({ tabs = { "a", "b", "c" },
+					active = function() return st2.tab end })
+				:navigation_bar({ items = { { icon = "home", label = "home" }, { icon = "apps", label = "set" } } })
+				:navigation_rail({ items = { { icon = "home", label = "home" },
+					{ icon = "gear", label = "set" } }, active = 1 })
+				:color_palette({ colors = { 0x111111, 0x444444, 0xff0000 },
+					value = function() return st2.color end })
+				:search_bar({ value = function() return "" end })
+				:range_slider({ value_low = 20, value_high = 80, min = 0, max = 200 })
+				:color_picker({ hue = 200, bri = 0.8 })
+				:dropdown({ items = { "a", "b", "c" }, value = "a" })
+			:end_()
+			local mm = mberr:measure()
+			if mm.W <= 0 or mm.H <= 0 then
+				failures[#failures + 1] = "ui2 miuix: measure 尺寸异常 " .. mm.W .. "x" .. mm.H
+			end
+			local mp = mberr.panel
+			mp.w, mp.h = math.max(mm.W, 400), mm.H + 60
+			mp:show()
+			mp:draw()
+		end)
+		if not okm then
+			failures[#failures + 1] = "ui2 miuix: 部件渲染失败: " .. tostring(errm)
+		end
+	end
+end
+
+if #failures == n1 then
+	print("ui2 miuix widgets: checkbox/radio/badge/icon_button/fab/toolbar/list_item/stepper/breadcrumb/tab_row/navigation_bar/color_palette/search_bar/top_app_bar/navigation_rail/range_slider/color_picker/dropdown/preferences ok")
+end
+
+-- ── ui2 浮层：dropdown/dialog/bottom_sheet 开启渲染 + 吞点击路径 ──
+local n15 = #failures
+do
+	local st3 = ui2.state({ dlg = true, sheet = true })
+	local octx = new_ctx()
+	local ob, oberr = pcall(ui2.panel, octx, { name = "ui2ov", title = "T" })
+	if not ob or not oberr then
+		failures[#failures + 1] = "ui2 overlay: panel 构建失败"
+	else
+		local oko, erro = pcall(function()
+			oberr:column({ pad = 12, gap = 10 })
+				:dropdown({ items = { "x", "y" }, value = "x" })
+			:end_()
+			oberr:dialog({ open = function() return st3.dlg end, title = "t", text = "msg",
+				buttons = { { label = "ok", filled = true } } })
+			oberr:bottom_sheet({ open = function() return st3.sheet end, title = "sheet",
+				items = { "a", "b" } })
+			-- 直接把 dropdown 节点置 open（模拟点击展开）
+			for _, ch in ipairs(oberr.children) do
+				if ch.children then
+					for _, c2 in ipairs(ch.children) do
+						if c2.kind == "dropdown" then
+							c2._open = true
+						end
+					end
+				end
+			end
+			local mm = oberr:measure()
+			local mp = oberr.panel
+			mp.w, mp.h = math.max(mm.W, 400), mm.H + 80
+			mp:show()
+			-- 模拟一次释放点击落在卡片外（吞点击路径 + 关闭逻辑不崩溃）
+			mp.ui.mrelease = { x = 10, y = 10 }
+			mp:draw()
+			mp.ui.mrelease = nil
+			mp:draw()
+		end)
+		if not oko then
+			failures[#failures + 1] = "ui2 overlay: 浮层渲染失败: " .. tostring(erro)
+		end
+	end
+end
+if #failures == n15 then
+	print("ui2 overlays: dropdown/dialog/bottom_sheet open + click-swallow ok")
+end
+
+-- ── ui_demo 全量：6 个 tab 全部 measure + render（含 extras 弹层） ──
+local n3 = #failures
+do
+	local dctx = new_ctx()
+	local okd, derr = pcall(function()
+		local demo = require("plugins.ui_demo")
+		demo.init(dctx)
+		local p = dctx._panels.ui_demo
+		if not p then
+			failures[#failures + 1] = "ui_demo: panel 未注册"
+			return
+		end
+		local st = demo.state
+		for tab = 1, 6 do
+			st.tab = tab
+			p:draw()
+		end
+		-- extras 交互：打开 dialog / bottom sheet 各画一帧
+		st.tab = 4
+		st.dlg = true
+		st.sheet = true
+		p:draw()
+		st.dlg, st.sheet = false, false
+		-- panels tab：card 内 list_item 自然宽须包含右侧 hint 文本（防负坐标截断）
+		st.tab = 6
+		local m6 = p.b:measure()
+		if m6.W < 200 then
+			failures[#failures + 1] = "ui_demo: panels tab card 自然宽异常 W=" .. m6.W
+				.. "（list_item right 文本空间未计入）"
+		end
+		p:draw()
+		-- 模拟点击/悬停：6 tab × (press/release/after) + 内容区 hover 扫描
+		local ui = p.ui
+		local function click(x, y)
+			ui.mx, ui.my = x, y
+			ui.mdown = true
+			local ok1, e1 = pcall(p.draw, p)
+			ui.mdown = false
+			ui.mrelease = { x = x, y = y }
+			local ok2, e2 = pcall(p.draw, p)
+			ui.mrelease = nil
+			local ok3, e3 = pcall(p.draw, p)
+			if not (ok1 and ok2 and ok3) then
+				failures[#failures + 1] = string.format("ui_demo: click %d,%d 报错: %s",
+					x, y, tostring(e1 or e2 or e3))
+			end
+		end
+		for tab = 1, 6 do
+			st.tab = tab
+			p:draw()
+			click(40 + tab * 60, 26)
+		end
+		for tab = 1, 6 do
+			st.tab = tab
+			p:draw()
+			for y = 44, p.h - 8, 10 do
+				for x = 8, p.w - 8, 20 do
+					ui.mx, ui.my = x, y
+					local ok, err = pcall(p.draw, p)
+					if not ok then
+						failures[#failures + 1] = string.format("ui_demo: hover tab%d %d,%d 报错: %s",
+							tab, x, y, tostring(err))
+						return
+					end
+				end
+			end
+		end
+		-- render 中途切 tab（曾致 nil 布局错误）：release 命中 tab_row →
+		-- on_change → visible 翻转 → 未 measure 子树被画 → 必须整帧重画
+		local switched = 0
+		for ti = 2, 6 do
+			local tx = math.floor((ti - 0.5) / 6 * p.w)
+			for y = 40, 110, 6 do
+				st.tab = 1
+				p:draw()
+				ui.mx, ui.my = tx, y
+				ui.mdown = false
+				ui.mrelease = { x = tx, y = y }
+				local ok, err = pcall(p.draw, p)
+				ui.mrelease = nil
+				if not ok then
+					failures[#failures + 1] = string.format("ui_demo: render 中途切 tab%d (x=%d,y=%d) 报错: %s",
+						ti, tx, y, tostring(err))
+					return
+				elseif st.tab == ti then
+					switched = switched + 1
+					break
+				end
+			end
+		end
+		if switched == 0 then
+			failures[#failures + 1] = "ui_demo: 切 tab 测试未命中 tab_row（几何变化？）"
+		end
+		-- 自适应：user_size 拉大/拉小后重排，双击 header（reset_size）恢复自然尺寸
+		for _, size in ipairs({ { 700, 620 }, { 260, 180 }, { 480, 501 } }) do
+			local ok, err = pcall(function()
+				p.user_size = { w = size[1], h = size[2] }
+				p:live_resize(size[1], size[2])
+				p:draw()
+			end)
+			if not ok then
+				failures[#failures + 1] = "ui_demo: resize " .. size[1] .. "x" .. size[2]
+					.. " 重排失败: " .. tostring(err)
+			end
+		end
+		p.user_size = { w = 700, h = 620 }
+		p:live_resize(700, 620)
+		local ok_r, err_r = pcall(p.reset_size, p)
+		if not ok_r then
+			failures[#failures + 1] = "ui_demo: reset_size 失败: " .. tostring(err_r)
+		elseif p.w > 700 then
+			failures[#failures + 1] = "ui_demo: reset_size 后未回到自然尺寸 (w=" .. p.w .. ")"
+		end
+	end)
+	if not okd then
+		failures[#failures + 1] = "ui_demo: 渲染失败: " .. tostring(derr)
+	end
+end
+if #failures == n3 then
+	print("ui_demo: 6 tabs (basic/lists/select/extras/windows/panels) render ok")
+end
+
+-- ── ui2 icons 单测：Nerd Font PUA 解析 / ASCII 兜底 / 未知名不产生豆腐 ──
+local n2 = #failures
+do
+	local Icons = require("core.icons")
+	Icons.configure(cfg) -- config.lua 字体路径
+	local g = Icons.glyph("gear")
+	if #g ~= 3 or g:byte(1) ~= 0xEF then
+		failures[#failures + 1] = "ui2 icons: nerd 模式未生效（gear 应为 3 字节 PUA UTF-8）"
+	end
+	if Icons.glyph("no_such_icon") ~= "?" then
+		failures[#failures + 1] = "ui2 icons: 未知名应兜底 '?'"
+	end
+	if Icons.glyph("›") ~= "›" then
+		failures[#failures + 1] = "ui2 icons: 原始字符应原样传递"
+	end
+	Icons.mode("ascii")
+	if Icons.glyph("gear") ~= "*" then
+		failures[#failures + 1] = "ui2 icons: ascii 兜底失败"
+	end
+	Icons.mode("nerd") -- 恢复，供后续测试
+end
+if #failures == n2 then
+	print("ui2 icons: nerd pua / ascii fallback / unknown->? ok")
+end
+for _, f in ipairs(failures) do
+	print("FAIL: " .. f)
 end
 os.exit(#failures == 0 and 0 or 1)

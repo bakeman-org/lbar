@@ -579,3 +579,261 @@ config.lua 全文重写为中文分区注释（键值不变，dofile 验证 21 �
 ## 迁移说明
 
 本文件于 2026-10-08 由项目历史 TODO 日志（第 1–90 条，按时间从旧到新）迁移整理而成，原 TODO 文件已删除。
+
+---
+
+## 新增 ui2 框架（webdev 风格声明式 UI 层）
+
+不破坏现有插件：在 `core/ui2.lua` 新增声明式部件树 API，返回的仍是普通 `core.panel.Panel`，旧插件一行未改。
+
+### 设计目标
+让插件 UI 写起来像 web 开发，跳出手算位置长度、逐行 `do_draw` 拼图的繁琐。
+
+### API
+- 容器：`panel(ctx, opts) :column :row :card :header :footer :end_` —— 自动垂直/水平/卡片堆叠，自带 pad/gap，spacer 自动填充剩余空间
+- 部件：`text centered_text h1 h2 h3 p span small big code div icon button toggle slider segmented progress text_field spacer gap` —— `h1/p/code` 接受 string 或 opts table
+- webdev 特性：
+  - `:each(list, fn)` —— 列表渲染（v-for），`fn(item, i, b)` 在临时子容器上声明子项
+  - `:component(fn, opts)` —— 复用组件（component），`fn(b, opts)` 返回子容器
+  - `:if_(cond, fn)` / `:unless(cond, fn)` —— 条件分支（v-if）
+  - `ui2.state(initial)` —— 响应式 state，metatable `__newindex` 触发订阅；`state:subscribe(fn)` 在写入时回调，配合 `panel:redraw()` 实现自动重绘
+  - `:on_key(sym, fn)` —— 一行绑定按键，无需 if/else 散落在 on_key
+
+### 兼容性
+- `core/ui2.lua` 完全是新增文件，`core/panel.lua` / `core/ui.lua` / 所有现有插件 0 改动
+- `plugins/hello.lua` 作为 ui2 演示插件（todo 列表 + 统计卡片 + 文本别名 + each + component + state 响应式），**未加入 `cfg.plugins`，按需手动启用**（避免意外占用键位）
+
+### 验证
+- `tools/plugin_test.lua` 22/22 现有插件全过；`tools/ui2_render_test.lua` 端到端渲染（声明 → 测量 → 绘制 → state 触发重绘）通过
+- `tools/plugin_test.lua` 新增 ui2 单测：`column/row/spacer/header` 链式 / `:each` / `:component` / `:if_/:unless` / `state` 订阅 / 9 个文本别名，全部 ok
+
+### 关于"集成 JS 框架"
+简短回答：**不推荐**。三条路对比——
+- **QuickJS 嵌入**：1MB 库，确实能在 Lua 里跑 JS，但只能跑 JS 表达式 / 函数，得不到 HTML/CSS——还得自己写 widget 系统
+- **WebView（webkit2gtk / wry）**：能得到完整 HTML/CSS/JS，但每个面板起一个 webview 进程（>30MB 内存 / 面板），bar 这种 20+ 面板常驻的场景会爆内存；而且现有 raylib 风格所有动效、动画、IME、键盘 grab、指针 grab 全部要重新适配
+- **当前 ui2（Lua 声明式）**：用 0 外部依赖，~600 行 Lua，把 webdev 写法的 80% 体验带到现有 C/Lua 后端；state 响应式、组件复用、模板循环、条件分支都齐了
+
+建议先在 ui2 上开发两个真实插件验证：一旦撞到 ui2 表达不了的场景（比如 CSS 布局的 3D 变换、复杂动画），再决定要不要上 WebView。
+
+---
+
+## plugin 沙箱：再不为每个测试插件改 config.lua
+
+为解决"测试 plugin → 加 cfg.plugins + cfg.keybinds → 测完还要回滚"的循环，新增**永久沙箱**机制。一次配置后，测试任何插件都不再触碰 config.lua。
+
+### 新增
+- `core/sandbox.lua`（约 210 行）—— 隔离 ctx 工具
+  - `M.list(dir?)` —— 扫描 `plugins/*.lua` 返回全量插件名
+  - `M.inspect(name)` —— 探针：返回 `{name, has_init, has_width, has_draw, has_on_click, has_tick}`
+  - `M.create(real_ctx)` —— 返回 sandbox 实例（含 mock L stub 集合：popup/key/surf/clip ~30 个 FFI 占位）
+  - `sbox:reset() / sbox:close()` —— 清空捕获的 panel、actions、errors
+  - `M.load(sbox, name)` —— 在隔离 ctx 里 `require + init`，捕获 `register_panel` 注册的 panel，记录 init 错误
+  - `M.mounted_panel(sbox)` / `M.mounted_panel_name(sbox)` —— 取首个注册的 panel
+- `plugins/sandbox.lua`（用 ui2 搭建，约 180 行）—— 永久挂在 bar 上的"测试容器"
+  - bar 项：🧪 圆角按钮（44px 宽），点击 toggle 沙箱面板
+  - 面板：左列插件列表（init/bar/panel 标签 + 当前选中高亮）+ 右列 init 区（load into sandbox / show captured panel / 显示 init 错误和捕获的 panel 尺寸）+ "how it works" 提示
+  - 状态走 `ui2.state` + 响应式订阅，点 refresh / 选插件自动重绘
+  - 暴露 `ctx.actions.sandbox_pick(name)` 供其他工具调用
+- `config.lua` —— 一次性把 `sandbox` 加入 `cfg.plugins` 末尾（**仅新增 1 行，未改任何现有键**）
+- `tools/plugin_test.lua` —— 加 sandbox 单测：list/inspect/load/mounted_panel/close/非法插件
+- `tools/ui2_render_test.lua` 已存在，加 sandbox 端到端检查
+
+### 工作流
+**改前**（每个测试插件）：
+1. 打开 `config.lua`
+2. 在 `cfg.plugins` 加名字
+3. 在 `cfg.keybinds` 加 `toggle_xxx` 键
+4. 重启 bar（`ctrl+alt+r`）
+5. 测
+6. 测完手动从 `config.lua` 删除（**不删就泄漏到生产**）
+
+**改后**：
+1. 打开 bar，点 🧪 按钮（永久挂着）
+2. 左列点想测的插件
+3. 右侧 "load into sandbox" —— 隔离 ctx 跑 init
+4. "show captured panel" 把该插件的 panel 作为独立 popup 弹出，测交互
+5. 改完代码点 sandbox 里的 "refresh" —— 不重启 bar
+6. **完全不碰 config.lua**
+
+### 隔离保证
+- sandbox ctx 的 `L` 是完整 mock 集合（popup_create/resize/size/flush/move/show/hide、kbd_grab/ungrab、ptr_grab/ungrab、key_grab/ungrab/lookup/code、surf_fill/rect/rrect_aa/text/line/image、xft_text_extent、clip_get/set/hist_len），所有 FFI 调用安全 noop
+- 独立的 `_panels` / `actions` / `_panel_by_id` —— 沙箱里 register_panel 不会污染 bar 的 `ctx._panels`
+- init 抛错被 pcall 捕获写到 `sbox.errors`，不传播到 bar
+
+### 验证
+- `tools/plugin_test.lua` 23/23 现有插件全过（sandbox 自身也被 smoke test 覆盖）
+- ui2 单测 + sandbox 单测全过
+- 真机 wayland 启动：bar 加载 23 plugins 无错
+
+---
+
+## plugin_container 支持多插件混合测试
+
+单一插件测试已够用后，混测多个插件的交互（bar item 之间的布局挤压、面板互斥/共存、状态联动）也需要。容器从单插件参数升级为插件列表。
+
+### 用法
+```
+luajit plugin_container.lua volume,clock,pomodoro          # 逗号分隔
+luajit plugin_container.lua volume clock pomodoro          # 空格分隔
+luajit plugin_container.lua plugins/volume.lua,plugins/clock.lua
+luajit plugin_container.lua volume,clock --config=mycfg.lua
+```
+
+### 行为
+- bar 按列表顺序只加载这些插件，其余一概不碰（config.lua 的 cfg.plugins 被覆盖）
+- 每个插件注册的面板**全部自动展示**（多面板共存是 lbar 内建能力：sync_kbd/sync_ptr_grab/事件路由都处理多 visible 面板），可拖动、点击 bar item 逐个 toggle
+- 保存**任意一个**已加载插件的文件 → 全部插件整体热重载（销毁全部面板 + bar，重开后端，按列表重新 init）
+- 参数解析修正：numeric for 循环里改控制变量不会跳过迭代，`--config path` 空格形式改用 while 循环实现
+
+### 单例锁说明
+C 层 `instance_lock`（$XDG_RUNTIME_DIR/lbar.lock flock）强制**同一时间只能跑一个 lbar 实例**——真 bar 或容器二选一。容器启动时若锁被占用，现在会打印友好提示（而不是裸 `lbar_open failed`）：
+```
+[ERROR] lbar: another lbar instance is already running (lock /run/user/1000/lbar.lock)
+error: lbar_open failed
+  最常见原因：已有另一个 lbar 实例在运行（真 bar 或另一个容器），...
+```
+
+### 验证
+- 参数解析：逗号/空格/路径/`--config=` 全形态 dry-run 通过；非法插件名报 usage
+- `PluginMgr.load_all` 多插件列表 mock 测试：volume+clock+pomodoro 3 个 bar item 加载成功
+- 热重载 watcher 升级为多文件 mtime 轮询（此前 watch_accum 每 tick 只加 16ms 导致 ~10s 才触发一次检查的 bug 已修：改加 tick 间隔 bdt）
+- plugin_test 22/22 不受影响
+
+---
+
+## ui2 重建 + MIUIX 全组件库（ui_demo 画廊重写）
+
+用户确认放弃 WebView 路线（QuickJS/WebView 内存与适配成本高），ui2 作为 Lua 声明式框架落地；随后按 [Miuix（HyperOS 风格 Compose 组件库）](https://compose-miuix-ui.github.io/miuix/zh_CN/components/) 的组件清单补齐全部面板内适用的组件，并把 `plugins/ui_demo.lua` 重写为 ui2 声明式的组件画廊。
+
+### core/ui2.lua（重建，~700 行）
+- 容器：`:column :row :card :end_` —— pad/gap 自动，spacer 弹性吃剩余空间
+- 文本：`:h1 :h2 :h3 :p :span :small :big :code :div :hint`（pad/color 语义分层）
+- 基础部件：`:button(filled/tonal/text) :icon :toggle :slider :progress :segmented :text_field :divider :spacer :gap`
+- **MIUIX 新部件**：
+  - `:checkbox :radio` —— 双态/单选控件（20px，rrect 自绘）
+  - `:list_item` —— BasicComponent：title/summary/icon + right=`arrow|switch|checkbox|radio|text`，整行 hover/点击
+  - `:icon_button`（40px 圆形 + hover tooltip 浮出）
+  - `:fab` —— 悬浮操作按钮（primary 圆底）
+  - `:toolbar` —— 一排 icon_button
+  - `:stepper` —— NumberPicker 简化（−/+ 步进）
+  - `:search_bar` —— 圆角搜索框（⌕ 前缀）
+  - `:tab_row` —— TabRow（下划线指示，等分标签）
+  - `:navigation_bar` —— 底部 pill 导航（icon+label，active 高亮）
+  - `:breadcrumb` —— 面包屑（› 分隔，分段可点）
+  - `:badge` —— 圆点/数字徽标
+  - `:small_title` —— 设置分组小标题
+  - `:color_palette` —— 网格调色盘（选中描边）
+  - `ui2.snackbar(ctx, msg, opts)` —— 桥接 lbar toast
+  - Overlay/Window 系列（dialog/bottom sheet/dropdown）由 lbar 面板系统承担，PullToRefresh 不适用——见画廊 panels tab
+- webdev 结构：`:each(list|fn, fn(item,i,b))` `:component(fn, opts)` `:if_/:unless` `ui2.state`（data 表分离的响应式，`__index/__newindex` 双向）`ui2.reactive(state, b, ctx)` `:on_key(sym, fn)`
+- 修过的坑：`a and a(...)` 不是合法 Lua 语句；state 必须用独立 data 表（rawset 后 `__newindex` 不再触发）；子视图共享 focusbox（component 内 text_field 聚焦）
+
+### plugins/ui_demo.lua（重写为 ui2 画廊，626 行手算坐标 → 声明式）
+- 5 个 tab（tab_row 切换，state 响应式）：basic（按钮族/图标/FAB/toolbar/滑块/进度/徽标）· lists（list_item 全变体/搜索/面包屑）· select（checkbox/radio/stepper/segmented/navigation_bar/调色盘）· windows（move/resize d-pad）· panels（键位清单 :each 生成）
+- window ops（i3/hyprland/面板的 move/resize/reset + ctx.actions 注册）从旧版**原样保留**，零功能损失
+
+### 工作流（开发插件的标准循环）
+```
+luajit tools/new_plugin.lua myplug      # 生成 ui2 骨架
+luajit plugin_container.lua myplug      # 容器跑（自动开面板）
+# 编辑 plugins/myplug.lua 保存 → <1s 热重载（含 core/ui2 本身）
+```
+
+### 验证
+- `tools/plugin_test.lua`：22/22 插件 + ui2 框架单测 + MIUIX 全部件渲染单测，exit 0
+- mock 端到端：ui_demo 5 tab 全渲染、state 写入触发重绘、bar item/click 契约
+- plugin_container 热重载现在也清 `core.ui2`（改框架即时生效）
+
+---
+
+## ui2 图标修复：Nerd Font PUA 解析（core/icons.lua）
+
+### 问题
+ui_demo 的 icon_button/fab/toolbar/list_item 显示豆腐块：部件用的是 Unicode
+标准区符号（⚙ ✕ ✦ ⤢ ↕ ⌕ ▣ ◈ ☾ ⚡ ↻），而项目字体是 FantasqueSansM
+Nerd Font Mono——Nerd Font 的图标字形全在私有区（PUA U+F000-F2FF），
+标准区这些符号主字体没有、CJK fallback（NotoSansCJK）也缺。
+
+### 方案：core/icons.lua
+- 62 个常用图标名 → Nerd Font PUA 码点（gear/plus/close/search/home/check/
+  chevron/arrow/expand/shrink/wifi/bluetooth/moon/zap/star/heart/bell/play/
+  pause/refresh/music/globe/cloud/lock/keyboard/display/...），LuaJIT `bit`
+  库编码 UTF-8
+- **模式自动检测**：config.font_path / fallback_font_paths 路径含 "nerd"
+  → nerd 模式；否则 ASCII 兜底字符（+ x > ^ # 等，永不出豆腐块）
+  - `Icons.mode("nerd"|"ascii")` 可手动覆盖
+- 未知名兜底返回 "?"；原始字符（× › 等已有字形的）原样传递
+- ui2 部件接线：icon_button/fab/toolbar/list_item/navigation_bar/icon/
+  search_bar 的 icon/glyph 参数**直接给图标名**（`icon = "gear"`），
+  传原始字符也兼容
+- bar item 直接用：`s:text(x, y, require("core.icons").glyph("wifi"), fg)`
+- ui_demo 全部 Unicode 符号已换图标名
+
+### 验证
+- 解析 Nerd Font cmap format 12：56 个用到的 PUA 码点在用户字体中全部存在
+- plugin_test：icons 单测（nerd/ascii/unknown→?/原样传递）+ 22/22 插件
+
+---
+
+## ui2 组件补齐至 Miuix 全家桶 + ui_demo 全量测试
+
+### 新增组件（core/ui2.lua）
+- `:top_app_bar`：标题 + 右侧 action 图标区（on_action）
+- `:navigation_rail`：垂直导航条（icon+label，active 高亮 pill）
+- `:range_slider`：双端滑块（点击 track 就近 handle 拖拽，低值≤高值约束）
+- `:color_picker`：色相条（24 段渐变）+ 亮度条（黑→纯色渐变），
+  hsv→rgb 内建（hsv_rgb/blend 工具导出），on_change(hue, bri, color)
+- `:dropdown`：下拉菜单（OverlayDropdownMenu），向下展开、超底自动向上
+- `:dialog` / `:bottom_sheet`：浮层对话框 / 底部弹层（title/text/items/buttons
+  任意组合；open 响应式函数或组件内自管）
+- preference 系列便捷封装：`:arrow_preference` `:switch_preference`
+  `:checkbox_preference` `:radio_preference`（= list_item + 对应控件）
+- `:basic_component`：Miuix BasicComponent（可点击 icon+title 行）
+
+### 浮层机制（ui2.render）
+树绘制前扫描 open 的 dropdown/dialog/bottom_sheet → 吞掉本帧 pointer
+release（树阶段控件全部收不到点击，防误触）→ 树画完后再画浮层（z 序
+正确）→ 浮层用保存的 release 做命中；点浮层外自动关闭。
+
+### ui_demo
+新增 extras tab：top_app_bar / navigation_rail / range_slider /
+color_picker（选色徽标实时联动）/ dropdown / dialog / bottom sheet。
+TAB 变 6 个：basic / lists / select / extras / windows / panels。
+
+### 测试（tools/plugin_test.lua）
+- miuix widgets 测试扩到全部新组件 + preference 封装（图标名风格）
+- 新增 overlays 测试：dropdown open + dialog + bottom_sheet 同时开启
+  渲染、吞点击路径、卡片外点击关闭
+- 新增 ui_demo 全量测试：6 tabs × (measure+render) + 弹层开合帧
+- 结果：22/22 plugins + ui2 framework/widgets/overlays/ui_demo/icons 全绿
+
+## 面板交互补齐：边缘 resize / 双击 header auto-fit / tab 切换修复
+
+### Bug：ui_demo 切 tab 内容不变
+`:if_` 是构建时求值，树不随 state 重建——tab 高亮变了内容永远停在第一帧。
+新增 ui2 通用 `visible` 属性（值或响应式函数）：measure 归零、draw 跳过、
+gap 不残留；ui_demo 每个 tab 一个 `visible` column，实时切换。
+
+### Bug：拖拽帧 draw 递归（容器下每帧报 nil 比较错误）
+range_slider / color_picker 的 on_change 曾每帧无条件回调 → state 写入 →
+reactive 在 draw 中重入 p:draw() → 递归绘制踩坏布局状态。修复：
+- 值变化才回调（与 slider 一致）
+- ui2.panel draw 回调加重入保护：draw 中的 state 更新标记 dirty，画完补一帧
+
+### 面板交互（core/panel.lua，lbar 与 plugin_container 共用）
+- 边缘 resize：右/下边缘 + 右下角 10px 热区，拖拽 live_resize，
+  user_size 记录（`opts.edge_resize = false` 可关）
+- 双击 header：丢弃 user_size，恢复自然 auto-fit（Panel:reset_size）
+- 移除 ui2 面板"点 header 整条关闭"行为（与拖拽/双击冲突；
+  close 按钮 / Esc 仍可关闭）
+
+### 测试（tools/plugin_test.lua）
+- ui_demo 全量：6 tabs 渲染 + 点击/悬停全区域扫描（press/release/after）
+- 自适应：user_size 700x620 / 260x180 / 480x501 重排 + reset_size 恢复
+
+## 修复 list_item 在 card 内右侧文本被截断
+list_item 的 measure 宽度曾返回 0（依赖 draw 时分配的宽度），导致外层
+card 的自然宽只剩 padding：右侧 hint 文本被算出负 x 坐标画到面板外
+（panels tab 快捷键列表左边缘截断、与标题重叠）。
+修复：measure 按 icon + 标题/摘要 + 右侧控件估算自然宽（min 140），
+draw 时仍吃满分配宽度。测试加 panels tab card 自然宽断言。
