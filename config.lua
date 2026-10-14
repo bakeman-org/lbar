@@ -45,7 +45,7 @@ return {
         'launcher', 'keybinds_help', 'clip_hist', 'pomodoro',
         'music_player', 'weather', 'sysinfo', 'sysmon',
         'color_picker', 'ui_demo', 'hide_all', 'settings', 'wallpaper',
-        'wifi', 'volume', 'battery', 'tray', 'clock',
+        'wifi', 'volume', 'brightness','battery', 'tray', 'clock',
     },
 
     -- 系统托盘（XEmbed 协议：X11 应用 / Wine / Java / 旧版 Qt、GTK）
