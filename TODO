@@ -14,3 +14,8 @@
 2. 支持 SNI（DBus StatusNotifierItem），覆盖 Electron / 现代 GTK3 应用（当前仅 XEmbed）。
 3. 若仍有明显卡顿：在目标机对主循环做 perf 采样，定位剩余热点（当前热点已按分析优化）。
 4. 内存：面板/列表临时表复用（低优先级）。
+
+
+# i3wm
+- workspace for i3wm not work, only happend on hyprland so far, try to fix it
+
