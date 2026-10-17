@@ -35,7 +35,7 @@ __prompt:
 
 
 # luastatic ref link: https://github.com/ers35/luastatic
-__native:
+__native: all
 	luastatic lbar.lua config.lua core/*.lua plugins/*.lua core/wm/*.lua   -I /usr/include/luajit-2.1/   /usr/lib/x86_64-linux-gnu/libluajit-5.1.a lbar.so lbar_audio.so
 
 __tmp_check_run: lbar.so lbar_audio.so __native lbar-cli
@@ -48,7 +48,9 @@ __tmp_check_run: lbar.so lbar_audio.so __native lbar-cli
 	-/tmp/lbar config.lua config.lua
 
 # TODO: can this be dispatched on debian based distro?
-__package:
+__package: __native
+	-rm /tmp/core /tmp/config.lua /tmp/lbar /tmp/lbar-cli /tmp/plugins /tmp/lbar.so /tmp/lbar_audio.so
+	-rv
 	-cp -rv lbar /tmp/
 	-cp -rv config.lua /tmp/
 	-cp -rv lbar-cli /tmp/
@@ -56,3 +58,7 @@ __package:
 	-cp -rv core /tmp/
 	-cp -rv plugins /tmp/
 	./bake.py -e /tmp/lbar -r /tmp/core -r /tmp/plugins -r /tmp/lbar-cli -r /tmp/config.lua -r /tmp/lbar.so -r /tmp/lbar_audio.so -o lbar.bake
+
+__local_deploy: __package
+	-rm ~/.local/bin/lbar.bake -v
+	-cp -v lbar.bake ~/.local/bin/lbar.bake

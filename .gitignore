@@ -7,5 +7,5 @@ lbar
 temp
 tmp
 *.luastatic.c
-bake.py
+!bake.py
 lbar.bake
